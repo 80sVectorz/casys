@@ -12,8 +12,13 @@ class CasysConfig:
 
     :param debug_dynsrc_mode: Level of generated code file storage.
 
-    :param debug_jit_disable_parallel: Disables numba JIT parallelization
+    :param debug_jit_disable_parallel: Disables numba parallelization.
+
+    :param debug_jit_inline_kernels: Default = True, Wether or not numba should inline kernel functions.
+        Inlining allows for better optimizations but can cost in JIT compile time.
+
     :param debug_jit_nopython: Default = True, Wether or not JIT should use nopython mode.
+
     :param debug_disable_jit: Allows easy debugging by disabling numba JIT
      
     :param debug_ast_origin_tracking: Enable AST origin tracking for debugging. 
@@ -30,6 +35,7 @@ class CasysConfig:
 
     debug_disable_cpu_parallelization: bool = False
     debug_jit_nopython: bool = True
+    debug_jit_inline_kernels: bool = True
     debug_disable_jit: Literal['full', 'step_func', False] = False
 
     debug_ast_origin_tracking: bool = True

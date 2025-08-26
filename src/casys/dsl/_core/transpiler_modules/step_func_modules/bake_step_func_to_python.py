@@ -193,6 +193,7 @@ class BakeStepFuncToPython(TranspilerModule):
                 nspace[ir.step_func.base.func.__name__],
                 nopython=CASYS_CONFIG.debug_jit_nopython, 
                 parallel=not CASYS_CONFIG.debug_disable_cpu_parallelization,
+                # cache=True,
             )
         else:
             nb_func = nspace[ir.step_func.base.func.__name__]

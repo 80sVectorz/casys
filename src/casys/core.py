@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from typing import TYPE_CHECKING, Any, Sequence, Type
 import numpy as np
 from casys.dsl._core.descriptors import CactBufferDescriptor
@@ -30,8 +31,9 @@ class CaSim:
     dedicated_idx_ids: dict[str, str]   
     idx_lut: dict[str, int]
     wr_indices: Sequence[int]
-
     buffer_args: list[np.ndarray]
+
+    _edit_queue: deque[tuple[int, int, tuple[tuple[str, Any], ...]]]
 
     timestamp: int = 0
 
@@ -49,6 +51,8 @@ class CaSim:
         self.buffer_descriptors = system.step_func.buffers
         self.dedicated_idx_ids = system.dedicated_idx_ids.copy()
         self.idx_lut = {KV_WR_IDX:0}
+
+        self._edit_queue = deque()
 
         # Create a double buffer (2 * width (ax-0) * height (ax-1) * depth (ax-2), etc) for each field
         self.buffers = {}
@@ -99,15 +103,13 @@ class CaSim:
 
     def step(self) -> None:
         """Perform one CA step"""
-        
+        self._apply_pending_edits()    
         self.timestamp+=1
-
         self.wr_indices = self.system.nb_step_func(
             *self.buffer_args,
             *self.wr_indices,
             self.timestamp,
         )
-
 
     def load_state(self, t: int, wr_indices: Sequence[int], buffers_snapshot: dict[str, np.ndarray]):
         """load_state loads a given state snapshot and timestamp.
@@ -122,19 +124,25 @@ class CaSim:
         self.buffers = buffers_snapshot
         self.buffer_args = [b for n,b in self.buffers.items() if n in self.system.signature_buffers]
 
+    def _apply_pending_edits(self) -> None:  # new helper
+        while len(self._edit_queue):
+            x, y, field_updates = self._edit_queue.pop()
+            for field_buffer_name, value in field_updates:
+                idx = self.wr_indices[self.idx_lut[field_buffer_name]]
+                self.buffers[field_buffer_name][1 ^ idx, x, y] = value
+
     def edit_cells(
         self,
-        edits: Sequence[tuple[int, int, tuple[tuple[str, Any], ...]]]
+        edits: Sequence[tuple[int, int, tuple[tuple[str, Any], ...]]],
     ) -> None:
         """
-        Apply ad-hoc edits to individual cells in one of the two buffers.
+        Enqueue ad-hoc edits to individual cells.
         
-        :param buffer_idx: 0 for the current read buffer, 1 for the write buffer.
         :param edits: A sequence of (x, y, ((field_name, value), …)) tuples.
         """
+
         for x, y, field_updates in edits:
-            for field_buffer_name, value in field_updates:
+            for field_buffer_name, _ in field_updates:
                 if field_buffer_name not in self.buffers:
                     raise ValueError(f"No field buffer called '{field_buffer_name}'")
-                idx = self.wr_indices[self.idx_lut[field_buffer_name]]
-                self.buffers[field_buffer_name][1^idx, x, y] = value
+            self._edit_queue.append((x, y, field_updates))
