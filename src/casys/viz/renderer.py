@@ -24,7 +24,7 @@ class Visualizer:
         self.layers: list[Layer] = []
         self.fps = fps
         self.window_size = window_size
-        h, w = self.sim._height, self.sim._width
+        w, h = self.sim.dims
         for cfg in layers_cfg:
             spec = LayerSpec(
                 name=cfg['name'],

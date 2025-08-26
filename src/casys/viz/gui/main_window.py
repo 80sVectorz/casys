@@ -155,8 +155,7 @@ class MainWindow(QMainWindow):
         """
         def handle_inspect_confirm(pos_press: tuple[int, int], pos_release: tuple[int, int]) -> None:
             x, y = pos_release
-            soa = self.sim.sim.system.step_fn_meta.soa
-            input_schema = soa.input_schema
+            buffers = self.sim.sim.system.step_func.buffers
             t = self.sim.sim.timestamp
             state = self.sim.get_current_state()
             # Build schema and state mapping
@@ -165,10 +164,10 @@ class MainWindow(QMainWindow):
             dlg.resize(300, 400)
             tree = QTreeWidget(dlg)
             tree.setHeaderLabels(['Field', 'Value'])
-            for buffer, cact in input_schema:
-                buffer_item = QTreeWidgetItem(tree, [buffer])
-                for field in cact.fields:
-                    key = soa.cvt(buffer, field)
+            for buffer_name, buffer in buffers.items():
+                buffer_item = QTreeWidgetItem(tree, [buffer_name])
+                for field in buffer.cact._fields:
+                    key = f'{buffer_name}_{field}'
                     val = state[key][x, y]
                     if key in self.ui_model.inspect_processors:
                         value_str = self.ui_model.inspect_processors[key](val)
@@ -268,9 +267,8 @@ class MainWindow(QMainWindow):
         return panel
 
     def _activate_tool(self, tool: Tool, checked: bool) -> None:
-        if not self.ui_model.tool_active:
-            self.ui_model.tool_active = True
-            self.canvas.click_request = ClickRequest(callback=tool.callback, single_use=tool.single_use)
+        self.ui_model.tool_active = True
+        self.canvas.click_request = ClickRequest(callback=tool.callback, single_use=tool.single_use)
 
     def _update_info_labels(self) -> None:
         container = self.centralWidget()

@@ -6,14 +6,14 @@ from typing import Literal, Protocol, get_args, cast, Any, Type
 import numpy as np
 
 @dataclass(frozen=True)
-class CACTFieldType:
-    """ Holds info about a CACTypeField's type"""
+class CactFieldType:
+    """ Holds info about a CAC-type field's type"""
 
     true_type: np.generic
     dummy_type: Type[Any]
 
     @classmethod
-    def from_dclass_field(cls: Type[CACTFieldType], field: Field) -> CACTFieldType:
+    def from_dclass_field(cls: Type[CactFieldType], field: Field) -> CactFieldType:
         """ Create CACTFieldType based on dataclass Field object
 
         Args:
@@ -43,15 +43,15 @@ class CACTFieldType:
         return cls(true_type,dummy_type)
 
 @dataclass(frozen=True)
-class CACTypeField:
+class CactField:
     name: str
-    field_type: CACTFieldType
+    field_type: CactFieldType
     default_value: Any | None
-    parent: CACType
+    parent: CaCellType
 
     @classmethod
-    def from_dclass_field(cls: Type[CACTypeField], field: Field, cact: CACType, default: Any | None = None) -> CACTypeField:
-        fld_type = CACTFieldType.from_dclass_field(field)
+    def from_dclass_field(cls: Type[CactField], field: Field, cact: CaCellType, default: Any | None = None) -> CactField:
+        fld_type = CactFieldType.from_dclass_field(field)
 
         if default is not None:
             # Validate default value's type
@@ -62,17 +62,17 @@ class CACTypeField:
             name=field.name, 
             field_type=fld_type,
             default_value=default,
-            parent=cact
+            parent=cact,
         )
-
-class CACType[T]:
+    
+class CaCellType[T]:
     """
-    Holds CAC Type definitions.  
+    Holds CA Cell (CAC) Type definitions. 
     Also includes dummy magic methods to appease the type checker when writing kernel function code.  
     """
 
     dclass: T
-    fields: dict[str, CACTypeField]
+    _fields: dict[str, CactField]
 
     def __init__(self, dclass: T, cls: object) -> None:
         if not is_dataclass(dclass):
@@ -88,8 +88,8 @@ class CACType[T]:
         }
 
         try:
-            self.fields = {
-                fld.name: CACTypeField.from_dclass_field(
+            self._fields = {
+                fld.name: CactField.from_dclass_field(
                     field=fld,
                     cact=self,
                     default=defaults.get(f'_{fld.name}')
@@ -106,25 +106,29 @@ class CACType[T]:
     def __getitem__(self, idx: int | tuple[int | None, ...]) -> Any:
         return self  # simulate access to a specific cell
 
-    def __getattr__(self, name: str) -> CACTypeField:
-        if name in self.fields:
-            return self.fields[name]
+    def __getattr__(self, name: str) -> CactField:
+        if name in ('_fields'):
+            return super().__getattr__(self, name)
+        if name in self._fields:
+            return self._fields[name]
         raise AttributeError(f"{name} not found in CACType")
 
     def __setattr__(self, name: str, value: Any) -> None:
-        if name in {"dclass", "fields"}:
+        if name in ("dclass", "_fields"):
             super().__setattr__(name, value)
         pass
 
     def __repr__(self) -> str:
         return f'<CACType: {self.dclass.__qualname__}>'
     
+type t_int_like = int | np.int_ | np.int8 | np.uint | np.uint8
+    
 class _FieldProto[G,T](Protocol):
     """Minimal API that kernel code expects from every cact_field."""
     def __getitem__(self,
-                    idx: int | tuple[int, int] | tuple[int,int,int]) -> T: ...
+                    idx: t_int_like | tuple[t_int_like, t_int_like] | tuple[t_int_like,t_int_like,t_int_like]) -> T: ...
     def __setitem__(self,
-                    idx: int | tuple[int, int] | tuple[int,int,int],
+                    idx: t_int_like | tuple[t_int_like, t_int_like] | tuple[t_int_like,t_int_like,t_int_like],
                     value: Any) -> None: ...
     def __bool__(self) -> bool: ...
 

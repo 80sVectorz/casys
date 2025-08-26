@@ -1,55 +1,38 @@
-from operator import truediv
-from numba.core.types import Object
-import numpy as np
-from dataclasses import dataclass, fields, is_dataclass
-from typing import Any, cast, Callable, Protocol, TYPE_CHECKING, get_args
-from ._cac_type import CACType
+from dataclasses import dataclass, is_dataclass
+from typing import Callable, Sequence
 
-# CACType wrapper components
+from ._cac_type import CaCellType
+from ._step_func import SimStepFunc
+from ._ca_kernel import CaKernel
+
+# -- User facing wrappers -- #
 
 def cac_type[T](cls: T) -> T:
     dclass = cls
     if not is_dataclass(dclass):
         dclass = dataclass(cls) # type: ignore
-    cls.__cac_type__ = CACType(dclass,cls) # type: ignore
+    cls.__cac_type__ = CaCellType(dclass,cls) # type: ignore
     return cls
 
-# if TYPE_CHECKING:
-#     # “pretend” each cact_field is an index-able grid object
-#     type cact_field[G: np.generic, D: int] = _FieldProto[D]
-# else:  # --------------------------------------------------------------
-#     # At runtime keep the behaviour you already have
-#     cact_field = cact_type            # same object CACType hands out
+def ca_kernel(func: Callable[..., None]) -> CaKernel:
+    return CaKernel.from_func(func)
 
-'''ReadOnlyBuffer
-Denotes a buffer reference that is read only.
-Instead of reading from the last buffer state it'll read from the current buffer state.
-This is useful for multi state simulation step functions,
-where one kernel function call might want to read from the new values written by the call before it.
-'''
-type ReadOnlyBuffer[T:CACType] = T
+def ca_sys_step_func(func: Callable[...,None]) -> SimStepFunc:
+    return SimStepFunc.from_func(func)
 
-# CAKernel wrapper components
+# -- Constants base class -- #
 
-class CAKernel:
-    func: Callable[..., None]
+class CaSimConstants:
+    """
+     attributes:
+        strict_kernels (bool): Ensure that kernels can only write to their own cell position.
+        dims (Sequence[int]): The simulation grid dimensions
+    """
 
-    def __init__(self, func: Callable[..., None]) -> None:
-        self.func = func
-    
-    def __call__(self, *args: Any, **kwargs: Any) -> None:
-        pass
+    strict_kernels: bool
+    dims: Sequence[int]
 
-
-def ca_kernel(func: Callable[..., None]) -> CAKernel:
-    return CAKernel(func)
-
-
-# CASysStepFunc wrapper components
-
-@dataclass(frozen=True)
-class CASysStepFunc:
-    func: Callable[...,None]
-
-def ca_sys_step_func(func: Callable[...,None]) -> CASysStepFunc:
-    return CASysStepFunc(func)
+class DefaultCaSimConstants(CaSimConstants):
+    """ Can be subclassed to specify custom constants """
+    strict_kernels: bool = True
+    dims: Sequence[int] = (2**6,2**6)

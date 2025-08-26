@@ -10,3 +10,4 @@ wheels/
 .venv
 
 dev_experiments/*
+**/__casys_debug__/**

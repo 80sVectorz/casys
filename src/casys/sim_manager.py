@@ -3,11 +3,12 @@ import copy
 import threading
 import time
 from queue import Queue, Empty
-from typing import Any, Callable, Optional
+from tkinter import SE
+from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
 
-from casys.core import CASim
+from casys.core import CaSim
 
 class SimManager:
     """
@@ -17,13 +18,14 @@ class SimManager:
     and update subscriptions via dirty-rectangle maps.
     """
 
-    sim: CASim
+    sim: CaSim
     timestep: float
-    history_buffer: deque[tuple[int, int, dict[str,np.ndarray]]] # timestamp, ld_idx, buffers
+    history_buffer: deque[tuple[int, Sequence[int], dict[str,np.ndarray]]] # timestamp, ld_idx, buffers
+    dims: Sequence[int]
 
     def __init__(
         self,
-        sim: CASim,
+        sim: CaSim,
         timestep: float = 0.0,
         history_buffer_len: int = 0
     ) -> None:
@@ -33,18 +35,22 @@ class SimManager:
         :param history_buffer_len: Number of simulations snapshots to store. For rewinding
         """
         self.sim = sim
+        self.dims = sim.dims
         self.timestep = timestep
         self.history_buffer = deque(maxlen=history_buffer_len)
 
         self._running = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._update_queue: Queue[dict[str, list[tuple[int, int, int, int]]]] = Queue()
-        self._callbacks: list[Callable[[dict[str, list[tuple[int, int, int, int]]]], Any]] = []
+        self._update_queue: Queue[dict[str, list[Sequence[int]]]] = Queue()
+        self._callbacks: list[Callable[[dict[str, list[Sequence[int]]]], Any]] = []
+
+        self._fps_ema_alpha = 0.2
+        self._fps_ema: float | None = None
+        self._frame_dt_window: deque[float] = deque(maxlen=120)
+        self._last_step_ms: float | None = None
 
         # field names and simulation dimensions
-        schema = self.sim.system.step_fn_meta.soa.output_schema or []
-        self._fields: list[str] = [name for name, _ in schema]
-        self._width, self._height = self.sim.dims
+        self._fields: list[str] = [name for name in sim.buffers if name in sim.system.signature_buffers]
 
 
     def start(self) -> None:
@@ -68,25 +74,27 @@ class SimManager:
 
     def _sim_step(self):
         if self.history_buffer.maxlen:
-            self.history_buffer.append((self.sim.timestamp, self.sim.ld_idx, copy.deepcopy(self.sim.buffers)))
+            self.history_buffer.append((self.sim.timestamp, copy.copy(self.sim.wr_indices), copy.deepcopy(self.sim.buffers))) # type: ignore
 
         self.sim.step()
 
     def step(self) -> None:
-        """
-        Perform exactly one simulation step and enqueue a full-frame dirty rect for each field.
-        """
-        if self._running.is_set(): return
+        """Perform exactly one simulation step and enqueue a full-frame dirty rect for each field."""
+        if self._running.is_set():
+            return
 
-        self._running.clear()
-        # advance simulation
+        step_start = time.perf_counter()
         self._sim_step()
+        step_ms = (time.perf_counter() - step_start) * 1000.0
+        self._record_timing(frame_dt=None, step_ms=step_ms)
+
         self._mark_dirty()
+
     
     def _mark_dirty(self):
         # mark entire grid dirty for each field
-        dirty_map: dict[str, list[tuple[int, int, int, int]]] = {}
-        full_rect = (0, 0, self._width,self._height)
+        dirty_map: dict[str, list[Sequence[int]]] = {}
+        full_rect = (*[0 for _ in self.dims], *self.dims)
         for field in self._fields:
             dirty_map[field] = [full_rect]
         self._publish_update(dirty_map)
@@ -104,11 +112,6 @@ class SimManager:
 
         if len(self.history_buffer) < 1: return
 
-        # if current_t == s1_t:
-        #     s1_t, s1 = self.history_buffer.pop()
-        # s2_t, s2 = self.history_buffer.pop()
-
-        # snapshot = { k:np.stack([s1[k],s2[k]]) for k in s1 }
         self.sim.load_state(*self.history_buffer.pop())
 
         self._mark_dirty()
@@ -117,7 +120,7 @@ class SimManager:
         self,
         block: bool = False,
         timeout: Optional[float] = None
-    ) -> Optional[dict[str, list[tuple[int, int, int, int]]]]:
+    ) -> Optional[dict[str, list[Sequence[int]]]]:
         """
         Retrieve the next update map of dirty rects.
 
@@ -137,8 +140,8 @@ class SimManager:
         :returns: mapping of field_name to 2D NumPy array
         """
         state: dict[str, Any] = {}
-        idx = self.sim.ld_idx
         for field in self._fields:
+            idx = self.sim.wr_indices[self.sim.idx_lut[field]] ^ 1
             buf = self.sim.buffers[field]
             state[field] = buf[idx]
         return state
@@ -155,27 +158,34 @@ class SimManager:
         self._callbacks.append(callback)
 
     def _run_loop(self) -> None:
-        """
-        Internal loop: steps simulation while running, respecting timestep.
-        """
+        """Internal loop: steps simulation while running, respecting timestep."""
         while True:
             if self._running.is_set():
-                start = time.perf_counter()
+                loop_start = time.perf_counter()
+
+                step_start = loop_start
                 self._sim_step()
+                step_ms = (time.perf_counter() - step_start) * 1000.0
+
                 # full-frame dirty each step
-                dirty_map = {field: [(0, 0, self._width, self._height)] for field in self._fields}
+                dirty_map = {field: [(*[0 for _ in self.dims], *self.dims)] for field in self._fields}
                 self._publish_update(dirty_map)
+
+                # honor timestep
                 if self.timestep > 0:
-                    elapsed = time.perf_counter() - start
+                    elapsed = time.perf_counter() - loop_start
                     to_sleep = self.timestep - elapsed
                     if to_sleep > 0:
                         time.sleep(to_sleep)
+
+                frame_dt = time.perf_counter() - loop_start
+                self._record_timing(frame_dt=frame_dt, step_ms=step_ms)
             else:
                 time.sleep(0.01)
 
     def _publish_update(
         self,
-        dirty_map: dict[str, list[tuple[int, int, int, int]]]
+        dirty_map: dict[str, list[Sequence[int]]]
     ) -> None:
         """
         Push update into queue and notify subscribers.
@@ -186,3 +196,46 @@ class SimManager:
                 cb(dirty_map)
             except Exception:
                 pass
+
+    def _record_timing(self, frame_dt: float | None, step_ms: float) -> None:
+        """Update timing metrics.
+
+        Args:
+            frame_dt: Wall-clock seconds for one full frame, including sleeps. If None, only step_ms is updated.
+            step_ms: Milliseconds spent computing the step itself, excluding sleeps.
+        """
+        self._last_step_ms = float(step_ms)
+
+        if frame_dt is None:
+            return
+
+        self._frame_dt_window.append(float(frame_dt))
+        inst_fps = (1.0 / frame_dt) if frame_dt > 0 else float('inf')
+        if self._fps_ema is None:
+            self._fps_ema = inst_fps
+        else:
+            self._fps_ema = self._fps_ema + self._fps_ema_alpha * (inst_fps - self._fps_ema)
+
+    @property
+    def fps_ema(self) -> float | None:
+        """Smoothed FPS using an exponential moving average."""
+        return self._fps_ema
+
+    @property
+    def fps_avg(self) -> float | None:
+        """Average FPS over the recent window."""
+        if not self._frame_dt_window:
+            return None
+        avg_dt = sum(self._frame_dt_window) / len(self._frame_dt_window)
+        return (1.0 / avg_dt) if avg_dt > 0 else float('inf')
+
+    @property
+    def last_step_ms(self) -> float | None:
+        """Milliseconds spent computing the last step (no sleep)."""
+        return self._last_step_ms
+
+    def reset_fps_stats(self) -> None:
+        """Clear accumulated FPS statistics."""
+        self._fps_ema = None
+        self._frame_dt_window.clear()
+        self._last_step_ms = None

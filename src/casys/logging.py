@@ -21,7 +21,9 @@ def setup_logging(verbose: bool = False) -> None:
     Args:
         verbose: If True, set level to DEBUG, else INFO.
     """
+    logger = logging.getLogger('casys')
     level = logging.DEBUG if verbose else logging.INFO
+    logger.setLevel(level)
     logging.basicConfig(
         level=level,
         format='[%(asctime)s] %(levelname)s: %(message)s',
@@ -30,6 +32,16 @@ def setup_logging(verbose: bool = False) -> None:
     )
 
 
+def log_warning(message: str) -> None:
+    """
+    Log a warning-level message.
+
+    Args:
+        message: The message to log.
+    """
+    if logging.getLogger('casys').level <= logging.WARN:
+        console.print(f'[bold yellow]WARNING: [/bold yellow]{message}')
+
 def log_debug(message: str) -> None:
     """
     Log a debug-level message.
@@ -37,7 +49,8 @@ def log_debug(message: str) -> None:
     Args:
         message: The message to log.
     """
-    logging.getLogger().debug(message)
+    if logging.getLogger('casys').level <= logging.DEBUG:
+        console.print(message)
 
 # ——————————————
 # Exception types & error display utilities
