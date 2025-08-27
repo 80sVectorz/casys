@@ -43,13 +43,14 @@ class SimManager:
         self._thread: Optional[threading.Thread] = None
         self._update_queue: Queue[dict[str, list[Sequence[int]]]] = Queue()
         self._callbacks: list[Callable[[dict[str, list[Sequence[int]]]], Any]] = []
+        self._state_lock = threading.RLock()
 
         self._fps_ema_alpha = 0.2
         self._fps_ema: float | None = None
         self._frame_dt_window: deque[float] = deque(maxlen=120)
         self._last_step_ms: float | None = None
 
-        # field names and simulation dimensions
+        # field names
         self._fields: list[str] = [name for name in sim.buffers if name in sim.system.signature_buffers]
 
 
@@ -148,7 +149,7 @@ class SimManager:
 
     def subscribe(
         self,
-        callback: Callable[[dict[str, list[tuple[int, int, int, int]]]], Any]
+        callback: Callable[[dict[str, list[Sequence[int]]]], Any]
     ) -> None:
         """
         Register a function to receive each dirty-map update.
@@ -196,6 +197,99 @@ class SimManager:
                 cb(dirty_map)
             except Exception:
                 pass
+
+    def save_state(self, path: str, history_steps: int = 0) -> None:
+        """Serialize current sim state and optional history to a compressed .npz."""
+        was_running = self._running.is_set()
+        if was_running:
+            self.pause()
+
+        # Snapshot under lock
+        with self._state_lock:
+            t = int(self.sim.timestamp)
+            wr_indices = np.array(self.sim.wr_indices, dtype=np.int32)
+            buffers = {name: np.array(arr, copy=True) for name, arr in self.sim.buffers.items()}
+
+            # History slice
+            hist_list = list(self.history_buffer)
+            if history_steps > 0:
+                hist_list = hist_list[-history_steps:]
+
+            # Flatten history into serializable pieces
+            history_meta = {
+                'history_len': np.array(len(hist_list), dtype=np.int32),
+                'history_maxlen': np.array(self.history_buffer.maxlen or 0, dtype=np.int32),
+            }
+            # Compose final dict of arrays for savez
+            payload: dict[str, np.ndarray] = {
+                't': np.array(t, dtype=np.int64),
+                'wr_indices': wr_indices,
+                **{f'buffers/{k}': v for k, v in buffers.items()},
+                **history_meta,
+            }
+            for i, (ht, hwr, hbufs) in enumerate(hist_list):
+                payload[f'history/{i}/t'] = np.array(int(ht), dtype=np.int64)
+                payload[f'history/{i}/wr_indices'] = np.array(hwr, dtype=np.int32)
+                for bk, bv in hbufs.items():
+                    payload[f'history/{i}/buffers/{bk}'] = np.array(bv, copy=True)
+
+        # Disk I/O outside the lock
+        if not path.lower().endswith('.npz'):
+            path = path + '.npz'
+        np.savez_compressed(path, **payload)
+
+        if was_running:
+            self.start()
+
+
+    def load_state(self, path: str) -> None:
+        """Load a previously saved .npz simulation snapshot from *path*."""
+        was_running = self._running.is_set()
+        if was_running:
+            self.pause()
+
+        # Read everything into memory first
+        with np.load(path, allow_pickle=False) as npz:
+            # Core snapshot
+            t_arr = npz['t']
+            wr_arr = npz['wr_indices']
+            t = int(t_arr.item() if t_arr.shape == () else t_arr[0])
+            wr_indices = [int(x) for x in wr_arr.tolist()]
+
+            # Rebuild buffers dict: pick all keys that start with 'buffers/'
+            buffers: dict[str, np.ndarray] = {}
+            prefix = 'buffers/'
+            for k in npz.files:
+                if k.startswith(prefix):
+                    name = k[len(prefix):]
+                    buffers[name] = np.array(npz[k])
+
+            # Optional history
+            history_len = int(npz['history_len']) if 'history_len' in npz.files else 0
+            history_maxlen = int(npz['history_maxlen']) if 'history_maxlen' in npz.files else 0
+            history_items: list[tuple[int, list[int], dict[str, np.ndarray]]] = []
+            for i in range(history_len):
+                ht = int(npz[f'history/{i}/t'])
+                hwr = [int(x) for x in npz[f'history/{i}/wr_indices'].tolist()]
+                hbufs: dict[str, np.ndarray] = {}
+                hpref = f'history/{i}/buffers/'
+                for k in npz.files:
+                    if k.startswith(hpref):
+                        name = k[len(hpref):]
+                        hbufs[name] = np.array(npz[k])
+                history_items.append((ht, hwr, hbufs))
+
+        # Apply under lock
+        with self._state_lock:
+            self.sim.load_state(t, wr_indices, buffers)
+            self.history_buffer = deque(history_items, maxlen=history_maxlen)
+
+        self._mark_dirty()
+
+        if was_running:
+            self.start()
+
+    # Performance and timing tracking related logic
 
     def _record_timing(self, frame_dt: float | None, step_ms: float) -> None:
         """Update timing metrics.

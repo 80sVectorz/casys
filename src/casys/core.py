@@ -124,12 +124,15 @@ class CaSim:
         self.buffers = buffers_snapshot
         self.buffer_args = [b for n,b in self.buffers.items() if n in self.system.signature_buffers]
 
-    def _apply_pending_edits(self) -> None:  # new helper
+    def _apply_pending_edits(self) -> None:
         while len(self._edit_queue):
             x, y, field_updates = self._edit_queue.pop()
             for field_buffer_name, value in field_updates:
                 idx = self.wr_indices[self.idx_lut[field_buffer_name]]
-                self.buffers[field_buffer_name][1 ^ idx, x, y] = value
+                if self.timestamp != 0:
+                    self.buffers[field_buffer_name][idx, x, y] = value
+                else:
+                    self.buffers[field_buffer_name][:, x, y] = value
 
     def edit_cells(
         self,
@@ -146,3 +149,6 @@ class CaSim:
                 if field_buffer_name not in self.buffers:
                     raise ValueError(f"No field buffer called '{field_buffer_name}'")
             self._edit_queue.append((x, y, field_updates))
+
+        if self.timestamp == 0:
+            self._apply_pending_edits()

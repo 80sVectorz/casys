@@ -121,7 +121,7 @@ class BakeKernelsToPython(TranspilerModule):
                 nb_func = numba.jit(
                     nspace[name],
                     nopython=CASYS_CONFIG.debug_jit_nopython,
-                    inline='always' if CASYS_CONFIG.debug_jit_inline_kernels else 'never'
+                    inline='always' if CASYS_CONFIG.debug_jit_inline_kernels else 'never',
                 )
             else:
                 nb_func = nspace[name]

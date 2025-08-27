@@ -5,7 +5,9 @@ import pathlib
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QFileDialog,
     QFrame,
+    QInputDialog,
     QMainWindow,
     QTreeWidget,
     QTreeWidgetItem,
@@ -18,9 +20,10 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QToolButton,
     QScrollArea,
-    QSizePolicy
+    QSizePolicy,
 )
 from PySide6.QtCore import QTimer, Qt
+from PySide6.QtGui import QAction
 
 from .canvas_widget import CanvasWidget, ClickRequest, Layer, LayerSpec
 from .ui_model import UIModel, InfoField, Tool
@@ -133,6 +136,11 @@ class MainWindow(QMainWindow):
         self.ui_model = ui_model
         self.lock = threading.Lock()
 
+        self._last_dir: pathlib.Path | None = None
+
+        # build menu bar
+        self._build_menus()
+
         container = QWidget(self)
         self.setCentralWidget(container)
         layout = QHBoxLayout(container)
@@ -203,12 +211,17 @@ class MainWindow(QMainWindow):
             btn = QPushButton(name, row)
             btn.clicked.connect(slot)
             row_layout.addWidget(btn)
+
         btn_step = QPushButton('Step', row)
         btn_step.clicked.connect(lambda: (self.lock.acquire(), self.sim.step(), self.lock.release()))
         btn_rewind = QPushButton('Rewind', row)
         btn_rewind.clicked.connect(lambda: (self.lock.acquire(), self.sim.rewind(), self.lock.release()))
         row_layout.addWidget(btn_step)
         row_layout.addWidget(btn_rewind)
+
+        for b in (btn_step, btn_rewind):
+            row_layout.addWidget(b)
+
         ctrl_section.content_layout.addWidget(row)
 
         lbl_slider = QLabel('Sec/Step', ctrl_section)
@@ -265,6 +278,66 @@ class MainWindow(QMainWindow):
 
         vbox.addStretch()
         return panel
+    
+    def _build_menus(self) -> None:
+        """Create 'File' menu with Save/Load actions."""
+        mb = self.menuBar()
+        file_menu = mb.addMenu('File')
+
+        act_save = QAction('Save…', self)
+        act_save.setShortcut('Ctrl+S')
+        act_save.triggered.connect(self._save_state_dialog)
+        file_menu.addAction(act_save)
+
+        act_load = QAction('Load…', self)
+        act_load.setShortcut('Ctrl+O')
+        act_load.triggered.connect(self._load_state_dialog)
+        file_menu.addAction(act_load)
+    
+    def _save_state_dialog(self) -> None:
+        start_dir = str(self._last_dir) if self._last_dir else ''
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            'Save Snapshot',
+            start_dir,
+            'CASim snapshot (*.npz)'
+        )
+        if not path:
+            return
+
+        self._last_dir = pathlib.Path(path).parent
+        max_hist = len(self.sim.history_buffer)
+        steps, ok = QInputDialog.getInt(
+            self,
+            'History Length',
+            f'How many history steps to save? (0–{max_hist})',
+            0, 0, max_hist
+        )
+        if ok:
+            self.lock.acquire()
+            try:
+                self.sim.save_state(path, steps)  # SimManager appends .npz if missing
+            finally:
+                self.lock.release()
+
+    def _load_state_dialog(self) -> None:
+        start_dir = str(self._last_dir) if self._last_dir else ''
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            'Load Snapshot',
+            start_dir,
+            'CASim snapshot (*.npz)'
+        )
+        if not path:
+            return
+
+        self._last_dir = pathlib.Path(path).parent
+        self.lock.acquire()
+        try:
+            self.sim.load_state(path)
+        finally:
+            self.lock.release()
+        self.canvas.update()
 
     def _activate_tool(self, tool: Tool, checked: bool) -> None:
         self.ui_model.tool_active = True
