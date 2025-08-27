@@ -1,3 +1,4 @@
+import copy
 from typing import Any
 from casys.dsl._core.core_transpiler import TranspilerModule
 from casys.dsl._core.errors import TranspileError
@@ -38,6 +39,18 @@ class MarkPosVars(TranspilerModule):
             key='mark_pos'),), 'expr')
         ]
 
+        ptrn_aug_assign = [
+            Collect(
+                NodePattern(
+                    ast.AugAssign,
+                    target=Collect(NodePattern(ast.Name,id=Filter(lambda n: n in pos_vars)), 'target'),
+                    op=Bind('op'),
+                    value=Bind('value'),
+                ),
+                'assign'
+            )
+        ]
+
         ptrn_assure_bounds = [
             Collect(
                 pattern=NodePattern(
@@ -76,6 +89,21 @@ class MarkPosVars(TranspilerModule):
 
             return [assign_node]
         
+        def handle_aug_assign(m: dict[str, Any]) -> list[ast.AST]:
+            assign: ast.AnnAssign = m['assign']
+            target: ast.Subscript = m['target']
+            op: ast.operator = m['op']
+            value: ast.expr = m['value']
+
+            target_copy = copy.deepcopy(target)
+
+            new_assign = ast.Assign(
+                targets=[target],
+                value = ast.BinOp(target_copy, op, value),
+            )
+            casys_ast.copy_meta(new_assign, assign)
+            return [new_assign]
+        
         def handle_assure_bounds(m: dict[str, Any]) -> list[ast.AST]:
             targets: list[str] = m['targets']
             assign_node: ast.Assign = m['assign']
@@ -105,13 +133,17 @@ class MarkPosVars(TranspilerModule):
                 'expr':  None
             })).visit(kernel.ir_ast)
 
-            (tf2:=PatternTransformer(ptrn_assure_bounds, {
+            (tf2:=PatternTransformer(ptrn_aug_assign, {
+                'assign':handle_aug_assign,
+            })).visit(kernel.ir_ast)
+
+            (tf3:=PatternTransformer(ptrn_assure_bounds, {
                 'assign':handle_assure_bounds,
                 'assure_bounds':  None,
                 'expr':  None
             })).visit(kernel.ir_ast)
 
-            if tf1.matches or tf2.matches:
+            if tf1.matches:
                 trkr.add_snapshot(
                     ast_node=kernel.ir_ast,
                     tags=(

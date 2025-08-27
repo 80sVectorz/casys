@@ -47,7 +47,7 @@ class InsertDoubleBufferIndexing(TranspilerModule):
             )
         ]
 
-        def handle_assign(m: dict[str, Any]) -> list[ast.AST]:
+        def handle_aug_assign(m: dict[str, Any]) -> list[ast.AST]:
             assign: ast.AnnAssign = m['assign']
             target: ast.Subscript = m['target']
             op: ast.operator = m['op']
@@ -79,7 +79,7 @@ class InsertDoubleBufferIndexing(TranspilerModule):
         for name, kernel in ir.kernels.items():
 
             (tf1:=PatternTransformer(ptrn_aug_assign, {
-                'assign':handle_assign
+                'assign':handle_aug_assign
             })).visit(kernel.ir_ast)
 
             (tf2:=BottomUpPatternTransformer(ptrn_subscript, {
