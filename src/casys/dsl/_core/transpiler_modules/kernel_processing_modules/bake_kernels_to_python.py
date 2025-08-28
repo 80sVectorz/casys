@@ -122,6 +122,7 @@ class BakeKernelsToPython(TranspilerModule):
                     nspace[name],
                     nopython=CASYS_CONFIG.debug_jit_nopython,
                     inline='always' if CASYS_CONFIG.debug_jit_inline_kernels else 'never',
+                    boundscheck = CASYS_CONFIG.debug_jit_enable_bounds_check,
                 )
             else:
                 nb_func = nspace[name]

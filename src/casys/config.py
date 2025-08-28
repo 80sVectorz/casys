@@ -20,6 +20,9 @@ class CasysConfig:
     :param debug_jit_nopython: Default = True, Wether or not JIT should use nopython mode.
 
     :param debug_disable_jit: Allows easy debugging by disabling numba JIT
+
+    :param debug_jit_enable_bounds_check: Default = False, Enable numba array access bounds-checking.
+        Useful for debugging purposes.
      
     :param debug_ast_origin_tracking: Enable AST origin tracking for debugging. 
         This will allow error messages to include original source code locations.
@@ -36,6 +39,7 @@ class CasysConfig:
     debug_disable_cpu_parallelization: bool = False
     debug_jit_nopython: bool = True
     debug_jit_inline_kernels: bool = True
+    debug_jit_enable_bounds_check: bool = False
     debug_disable_jit: Literal['full', 'step_func', False] = False
 
     debug_ast_origin_tracking: bool = True
