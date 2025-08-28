@@ -1,6 +1,6 @@
 *
 
-!src/**/*.py
+!src/**.py
 !pyproject.toml
 !README.md
 
