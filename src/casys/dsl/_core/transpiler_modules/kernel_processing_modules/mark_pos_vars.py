@@ -39,29 +39,10 @@ class MarkPosVars(TranspilerModule):
             key='mark_pos'),), 'expr')
         ]
 
-        ptrn_aug_assign = [
-            Collect(
-                NodePattern(
-                    ast.AugAssign,
-                    target=Collect(NodePattern(ast.Name,id=Filter(lambda n: n in pos_vars)), 'target'),
-                    op=Bind('op'),
-                    value=Bind('value'),
-                ),
-                'assign'
-            )
-        ]
-
         ptrn_assure_bounds = [
-            Collect(
-                pattern=NodePattern(
-                    ast.Assign,
-                    targets=NodePattern(
-                        ast.Tuple,
-                        elts=OneOrMore(
-                        NodePattern(ast.Name, id=Bind('targets'))
-                    )
-                    ),
-                ), key='assign',
+            Filter(
+                lambda n: isinstance(n, (ast.Assign, ast.AugAssign, ast.NamedExpr))
+                ,key='assign',
             ),
             Collect(
             match_in_expr(Collect(match_func_call(
@@ -89,38 +70,14 @@ class MarkPosVars(TranspilerModule):
 
             return [assign_node]
         
-        def handle_aug_assign(m: dict[str, Any]) -> list[ast.AST]:
-            assign: ast.AnnAssign = m['assign']
-            target: ast.Subscript = m['target']
-            op: ast.operator = m['op']
-            value: ast.expr = m['value']
-
-            target_copy = copy.deepcopy(target)
-
-            new_assign = ast.Assign(
-                targets=[target],
-                value = ast.BinOp(target_copy, op, value),
-            )
-            casys_ast.copy_meta(new_assign, assign)
-            return [new_assign]
-        
         def handle_assure_bounds(m: dict[str, Any]) -> list[ast.AST]:
-            targets: list[str] = m['targets']
             assign_node: ast.Assign = m['assign']
             assure_bounds: casys_ast.Cs_Macro = m['assure_bounds']
             assert isinstance(assure_bounds.func, ast.Name)
             
             assure_bounds.func.id
 
-            node_metadata = (
-                meta if 
-                (meta := casys_ast.get_meta(assign_node)) is not None
-                else 
-                casys_ast.AstNodeMeta(
-                    verified_bounds=True
-                )
-            )
-            node_metadata.verified_bounds = True
+            casys_ast.get_meta(assign_node).verified_bounds = True
 
             return [assign_node]
 
@@ -128,22 +85,19 @@ class MarkPosVars(TranspilerModule):
         for name, kernel in ir.kernels.items():
             pos_vars = kernel.metadata.get(MDK_POS_VARS)
 
-            (tf1:=PatternTransformer(ptrn_mark_pos, {
-                'assign':handle_mark_pos,
-                'expr':  None
-            })).visit(kernel.ir_ast)
-
-            (tf2:=PatternTransformer(ptrn_aug_assign, {
-                'assign':handle_aug_assign,
-            })).visit(kernel.ir_ast)
-
-            (tf3:=PatternTransformer(ptrn_assure_bounds, {
-                'assign':handle_assure_bounds,
-                'assure_bounds':  None,
-                'expr':  None
-            })).visit(kernel.ir_ast)
-
-            if tf1.matches:
+            transformers = (
+                PatternTransformer(ptrn_mark_pos, {
+                    'assign':handle_mark_pos,
+                    'expr':  None
+                }),
+                PatternTransformer(ptrn_assure_bounds, {
+                    'assign':handle_assure_bounds,
+                    'assure_bounds':  None,
+                    'expr':  None
+                })
+            )
+            for tf in transformers: tf.visit(kernel.ir_ast)
+            if transformers[0].matches:
                 trkr.add_snapshot(
                     ast_node=kernel.ir_ast,
                     tags=(
