@@ -121,7 +121,7 @@ class CaCellType[T]:
     def __repr__(self) -> str:
         return f'<CACType: {self.dclass.__qualname__}>'
     
-type t_int_like = int | np.int_ | np.int8 | np.uint | np.uint8
+type t_int_like = int | np.int_ | np.int8 | np.int16 | np.uint | np.uint8 | np.uint16
     
 class _FieldProto[G,T](Protocol):
     """Minimal API that kernel code expects from every cact_field."""
