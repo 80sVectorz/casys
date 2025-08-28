@@ -1,11 +1,13 @@
 *
 
-!.gitignore
+!*/
+
+!/.gitignore
+!/README.md
+
+!/pyproject.toml
 
 !src/**/*.py
-
-!pyproject.toml
-!README.md
 
 # Python-generated files
 __pycache__/

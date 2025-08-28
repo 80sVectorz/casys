@@ -37,7 +37,7 @@ class HandleKGets(TranspilerModule):
                     value=Filter(
                         predicate=lambda n: (
                             isinstance(n, casys_ast.Cs_Macro)
-                            and (func_name:=(NodePattern(ast.Name,id=Bind('name')).match(n.func, {}))) is not None
+                            and (func_name:=(NodePattern(ast.Name,id=Bind('name')).match(n.func))) is not None
                             and func_name['name'] in (
                                 k_get_pos.__name__,
                                 k_get_dims.__name__,

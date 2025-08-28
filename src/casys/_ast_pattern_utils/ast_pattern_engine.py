@@ -26,8 +26,9 @@ class Pattern(ast.AST):
     _parent: Pattern | None = None
 
     # ---------------------------------- public API ----------------------------------
-    def match(self, node: object, bindings: dict[str, object]):
+    def match(self, node: object, bindings: dict[str, object] | None = None):
         """Match *node* and return updated *bindings* or *None*."""
+        bindings = bindings or {}
         raise NotImplementedError
 
     def handle_message(self, message: Message) -> None:
@@ -80,7 +81,8 @@ class Bind(Pattern):
         super()._on_parent_init()
         self.bubble_message(AnnounceBinding(self.key, self))
 
-    def match(self, node: Any, bindings: dict[str, Any]):
+    def match(self, node: Any, bindings: dict[str, Any] | None = None):
+        bindings = bindings or {}
         force = self._ancestor_forces_list()
         if self.key in bindings:
             if not force:
@@ -93,7 +95,8 @@ class Bind(Pattern):
 class WildCard(Pattern):
     """Match any node"""
 
-    def match(self, node: Any, bindings: dict[str, Any]):
+    def match(self, node: Any, bindings: dict[str, Any] | None = None):
+        bindings = bindings or {}
         return bindings
 
 # ---------------------------------------------------------------------------
@@ -109,7 +112,8 @@ class NodePattern(Pattern):
             if isinstance(pat, Pattern):
                 pat._set_parent(self)
 
-    def match(self, node: Any, bindings: dict[str, Any]):
+    def match(self, node: Any, bindings: dict[str, Any] | None = None):
+        bindings = bindings or {}
         if not isinstance(node, self.node_type):
             return None
         merged = dict(bindings)
@@ -163,7 +167,8 @@ class Collect(Pattern):
             for binding in [*self.expected_bindings,self.key]:
                 self.bubble_message(message=AnnounceBinding(binding, self))
 
-    def match(self, node: Any, bindings: dict[str, Any]) -> None | dict[str, Any]:
+    def match(self, node: Any, bindings: dict[str, Any] | None = None) -> None | dict[str, Any]:
+        bindings = bindings or {}
         inner = self.pattern.match(node, {})
         if inner is None:
             return None
@@ -213,7 +218,8 @@ class Filter(Pattern):
         if self.key:
             self.bubble_message(AnnounceBinding(self.key, self))
 
-    def match(self, node: Any, bindings: dict[str, Any]):
+    def match(self, node: Any, bindings: dict[str, Any] | None = None):
+        bindings = bindings or {}
         if not self.predicate(node):
             return None
         if self.key is None:
