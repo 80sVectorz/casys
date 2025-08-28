@@ -1,6 +1,9 @@
 *
 
-!src/**.py
+!.gitignore
+
+!src/**/*.py
+
 !pyproject.toml
 !README.md
 
@@ -15,5 +18,5 @@ wheels/
 # Virtual environments
 .venv
 
-dev_experiments/*
+dev_experiments/**
 **/__casys_debug__/**
