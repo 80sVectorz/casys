@@ -103,7 +103,7 @@ class InsertBoundsLogic(TranspilerModule):
             if casys_ast.get_meta(assign).verified_bounds:
                 return [assign]
 
-            if m_targets:=ptrn_targets_tuple.match(targets_list[0]):
+            if (m_targets:=ptrn_targets_tuple.match(targets_list[0])) :
                 targets: list[str] = m_targets['targets']
 
                 if not any(t in pos_vars for t in targets): return [assign]
@@ -233,7 +233,7 @@ class InsertBoundsLogic(TranspilerModule):
                 }),
             )
 
-            for tf in transformers: tf.visit
+            for tf in transformers: tf.visit(kernel.ir_ast)
 
             if any(tf.matches for tf in transformers):
                 trkr.add_snapshot(

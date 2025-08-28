@@ -72,10 +72,6 @@ class MarkPosVars(TranspilerModule):
         
         def handle_assure_bounds(m: dict[str, Any]) -> list[ast.AST]:
             assign_node: ast.Assign = m['assign']
-            assure_bounds: casys_ast.Cs_Macro = m['assure_bounds']
-            assert isinstance(assure_bounds.func, ast.Name)
-            
-            assure_bounds.func.id
 
             casys_ast.get_meta(assign_node).verified_bounds = True
 
@@ -97,6 +93,7 @@ class MarkPosVars(TranspilerModule):
                 })
             )
             for tf in transformers: tf.visit(kernel.ir_ast)
+
             if transformers[0].matches:
                 trkr.add_snapshot(
                     ast_node=kernel.ir_ast,

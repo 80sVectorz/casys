@@ -17,9 +17,10 @@ from casys.dsl._core.transpiler_modules.kernel_processing_modules import (
     mark_buffer_refs,
     macros,
     handle_k_gets,
-    mark_pos_vars,
 
+    mark_pos_vars,
     insert_bounds_logic,
+
     insert_double_buffer_indexing,
 
     validate_readonly,
