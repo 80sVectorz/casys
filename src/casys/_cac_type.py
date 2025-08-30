@@ -36,7 +36,6 @@ class CactFieldType:
             raise TypeError(f'Missing arguments for `cact_field` annotation of CACType field `{field.name}`. `cact_field` requires 2 arguments')
 
         true_type, dummy_type = t_args
-        print(true_type)
         if not any(issubclass(true_type,T) for T in [np.generic,]):
             raise TypeError(f'Invalid type for `cact_field` `T_true` argument for CACType field `{field.name}`. `T_true` must be an np.generic type')
 

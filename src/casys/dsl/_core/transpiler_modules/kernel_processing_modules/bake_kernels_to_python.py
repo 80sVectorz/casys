@@ -1,8 +1,8 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Sequence
 
+from black import trans
 import numba
-from numba.np.ufunc import parallel
 
 from casys.config import CASYS_CONFIG
 from casys.dsl._core.debug.dynsrc import compile_and_exec
@@ -16,12 +16,13 @@ from casys.dsl._core.core_transpiler import TranspilerModule
 from casys.dsl._core.debug.ast_timeline_tracking import get_tracker, f_tag_kernel, f_tag_transpiler_module
 
 from casys.dsl._core.kernel_values import KV_WR_IDX, f_kv_pos_ax, f_kv_wr_idx
-from casys.dsl._core.ir_metadata_specs.md_kernels_base import MDK_NEEDS_DEDICATED_IDX
+from casys.dsl._core.ir_metadata_specs.md_kernels_base import MDK_NEEDS_DEDICATED_IDX, MDK_SIGNATURE
 from casys.dsl._core.ir_metadata_specs.md_core_transpiler import MDK_CONSTANTS, MDK_DIMS
 
 import ast
 from casys.dsl._core import casys_ast
 from casys._ast_pattern_utils.ast_pattern_engine import PatternTransformer, Collect, Bind, NodePattern
+import time
 
 class BakeKernelsToPython(TranspilerModule):
     def process(self, ir: Ir_CaSys) -> None:
@@ -67,6 +68,7 @@ class BakeKernelsToPython(TranspilerModule):
 
         for name, kernel in ir.kernels.items():
             needs_dedicated_idx = kernel.metadata.get(MDK_NEEDS_DEDICATED_IDX)
+            signature = kernel.metadata.get(MDK_SIGNATURE)
 
             (tf1:=PatternTransformer(ptrn_buffer_refs, {
                 'buffer_ref': lambda m: [ast.Name(f"{m['b']}_{m['f']}")],
@@ -84,23 +86,26 @@ class BakeKernelsToPython(TranspilerModule):
                 ])],
             })).visit(kernel.ir_ast)
 
-            (tf2:=PatternTransformer(ptrn_axis_pos, {
-                'kpos': lambda m: [ast.Name(f_kv_pos_ax(m['ax']))],
-            })).visit(kernel.ir_ast)
+            transformers = (
+                PatternTransformer(ptrn_axis_pos, {
+                    'kpos': lambda m: [ast.Name(f_kv_pos_ax(m['ax']))],
+                }),
 
-            (tf3:=PatternTransformer(ptrn_axis_size, {
-                'axis_size': lambda m: [ast.Constant(dims[m['ax']])],
-            })).visit(kernel.ir_ast)
+                PatternTransformer(ptrn_axis_size, {
+                    'axis_size': lambda m: [ast.Constant(dims[m['ax']])],
+                }),
 
-            (tf4:=PatternTransformer(ptrn_constants, {
-                'constant': lambda m: [ast.Constant(constants[m['id']])],
-            })).visit(kernel.ir_ast)
+                PatternTransformer(ptrn_constants, {
+                    'constant': lambda m: [ast.Constant(constants[m['id']])],
+                }),
+            )
 
-            if tf1.matches or tf2.matches or tf3.matches or tf4.matches:
-                trkr.add_snapshot(
-                    tags=(f_tag_kernel(name), f_tag_transpiler_module(self)),
-                    ast_node=kernel.ir_ast
-                )
+            for tf in transformers: tf.visit(kernel.ir_ast)
+
+            trkr.add_snapshot(
+                tags=(f_tag_kernel(name), f_tag_transpiler_module(self)),
+                ast_node=kernel.ir_ast
+            )
 
             ast.fix_missing_locations(kernel.ir_ast)
             src = ast.unparse(kernel.ir_ast)
@@ -116,14 +121,27 @@ class BakeKernelsToPython(TranspilerModule):
                 mirror_kind='kernel',
             )
 
-
             if CASYS_CONFIG.debug_disable_jit != 'full':
+                start_time = time.perf_counter()
                 nb_func = numba.jit(
-                    nspace[name],
+                    numba.types.void(*signature.values()),
                     nopython=CASYS_CONFIG.debug_jit_nopython,
                     inline='always' if CASYS_CONFIG.debug_jit_inline_kernels else 'never',
-                    boundscheck = CASYS_CONFIG.debug_jit_enable_bounds_check,
-                )
+                    boundscheck=CASYS_CONFIG.debug_jit_enable_bounds_check,
+                    parallel=False,
+                )(nspace[name])
+                end_time = time.perf_counter()
+
+                message = f"Kernel '{name}' Numba compilation completed in"
+                elapsed_time = end_time - start_time
+                if elapsed_time < 1:
+                    print(message, f'{elapsed_time * 1000:.2f} ms')
+                elif elapsed_time < 60:
+                    print(message, f'{elapsed_time:.2f} s')
+                else:
+                    minutes, seconds = divmod(elapsed_time, 60)
+                    milliseconds = (seconds - int(seconds)) * 1000
+                    print(message, f'{int(minutes)}:{int(seconds):02}:{int(milliseconds):03}')
             else:
                 nb_func = nspace[name]
             

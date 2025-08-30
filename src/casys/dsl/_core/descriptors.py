@@ -2,12 +2,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Callable, Iterable, Sequence
 
-from numpy import isin
-
 from casys.dsl._core.ir_metadata_specs.md_kernels_base import MDK_BUFFER_USAGE_INFO, BufferUsageInfo
 
 if TYPE_CHECKING:
-    from casys._cac_type import CaCellType
+    from casys._cac_type import CaCellType, CactField
     from casys.dsl._core.ir import Ir_CaSys
 
 from dataclasses import dataclass
@@ -20,14 +18,19 @@ class CactBufferDescriptor(PrettyReprMixin):
     cact: CaCellType
 
     @staticmethod
-    def get_soa_pairs_multi(descriptors: Iterable[CactBufferDescriptor], filter_predicate: Callable[[str,str],bool] = lambda a,b: True) -> tuple[tuple[str,str],...]:
+    def get_soa_pairs_multi(
+        descriptors: Iterable[CactBufferDescriptor], 
+        filter_predicate: Callable[[str,str],bool] = lambda a,b: True, 
+        include_field_objects: bool = False
+    ) -> tuple[tuple[str,str],...] | tuple[tuple[str,str,CactField],...]:
         """Get all SoA field pairs"""
-        return tuple(
-            (desc.name,fld)
+        res = tuple(
+            (desc.name,fld,desc.cact._fields[fld]) if include_field_objects else (desc.name,fld)
             for desc in descriptors
             for fld in desc.cact._fields
             if filter_predicate(desc.name, fld)
         )
+        return res # type: ignore
     
     @property
     def soa_pairs(self):

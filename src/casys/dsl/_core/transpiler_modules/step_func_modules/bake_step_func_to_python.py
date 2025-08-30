@@ -3,12 +3,14 @@ from typing import TYPE_CHECKING, Any, Sequence
 
 from collections import Counter
 import numba
+import numpy as np
+import time
 
 from casys.config import CASYS_CONFIG
 
 from casys._utils.misc_utils import namespace_canonicalize_modules
 from casys.dsl._core.debug.dynsrc import compile_and_exec
-from casys.dsl._core.ir_metadata_specs.md_stepfunc_base import MDK_DEDICATED_IDX_IDS
+from casys.dsl._core.ir_metadata_specs.md_stepfunc_base import MDK_DEDICATED_IDX_IDS, MDK_SIGNATURE
 
 from casys.dsl._core.ir import Ir_CaSys
 from casys.dsl._core.descriptors import KernelCallDescriptor
@@ -17,7 +19,7 @@ from casys.dsl._core.core_transpiler import TranspilerModule
 
 from casys.dsl._core.debug.ast_timeline_tracking import TAG_STEP_FUNC, get_tracker, f_tag_transpiler_module
 
-from casys.dsl._core.kernel_values import KV_TIMESTAMP, KV_WR_IDX, f_kv_pos_ax, f_kv_wr_idx
+from casys.dsl._core.kernel_values import KV_I_SIM_STEP_INTERNAL, KV_N_SIM_STEP_REPEATS, KV_TIMESTAMP, KV_WR_IDX, f_kv_pos_ax, f_kv_wr_idx
 from casys.dsl._core.ir_metadata_specs.md_kernels_base import MDK_BUFFER_USAGE_INFO, MDK_NEEDS_DEDICATED_IDX
 from casys.dsl._core.ir_metadata_specs.md_core_transpiler import MDK_CONSTANTS, MDK_DIMS
 
@@ -188,13 +190,27 @@ class BakeStepFuncToPython(TranspilerModule):
             mirror_kind='step',
         )
 
+        signature = ir.step_func.metadata.get(MDK_SIGNATURE)
         if CASYS_CONFIG.debug_disable_jit not in ('full', 'step_func'):
+            start_time = time.perf_counter()
             nb_func = numba.jit(
-                nspace[ir.step_func.base.func.__name__],
+                numba.types.UniTuple(numba.from_dtype(np.uint8),len(idx_ids))(*signature.values()),
                 nopython=CASYS_CONFIG.debug_jit_nopython, 
                 parallel=not CASYS_CONFIG.debug_disable_cpu_parallelization,
                 boundscheck = CASYS_CONFIG.debug_jit_enable_bounds_check,
-            )
+            )(nspace[ir.step_func.base.func.__name__])
+            end_time = time.perf_counter()
+
+            elapsed_time = end_time - start_time
+            message = 'Simulation step function Numba compilation completed in'
+            if elapsed_time < 1:
+                print(message, f"{elapsed_time * 1000:.2f} ms")
+            elif elapsed_time < 60:
+                print(message, f'{elapsed_time:.2f} s')
+            else:
+                minutes, seconds = divmod(elapsed_time, 60)
+                milliseconds = (seconds - int(seconds)) * 1000
+                print(message, f'{int(minutes)}:{int(seconds):02}:{int(milliseconds):03}')
         else:
             nb_func = nspace[ir.step_func.base.func.__name__]
 

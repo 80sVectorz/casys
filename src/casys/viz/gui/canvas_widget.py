@@ -110,6 +110,7 @@ void main() {
 @dataclass
 class ClickRequest:
     callback: Callable[[tuple[int,int], tuple[int,int]], None]
+    lock: threading.Lock
     single_use: bool
     live: bool = False
     dirty: bool = False
@@ -317,9 +318,22 @@ class CanvasWidget(SceneCanvas):
         if ev.button == 1:
             cr = self.click_request
             if cr is not None and cr.live:
-                cr.callback(self._screen_to_grid(*tuple(self._last_pos.astype(np.int_))), self._screen_to_grid(*ev.pos)) # type: ignore
+
+                cr.lock.acquire()
+                try:
+                    was_playing = not self.sim.paused
+                    if was_playing:
+                        self.sim.pause()
+
+                    cr.callback(self._screen_to_grid(*tuple(self._last_pos.astype(np.int_))), self._screen_to_grid(*ev.pos)) # type: ignore
+                finally:
+                    cr.lock.release()
+
+                if was_playing: self.sim.start()
+
                 if cr.single_use or Key('Shift') not in ev.modifiers:
                     self.click_request = None
+
                 else:
                     cr.dirty = True
                     cr.live = False

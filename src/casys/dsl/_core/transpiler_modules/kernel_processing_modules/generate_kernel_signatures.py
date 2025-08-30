@@ -1,10 +1,11 @@
 import ast
 from typing import TYPE_CHECKING, Sequence
 
-from vispy.gloo import buffer
-from casys.dsl._core.core_transpiler import TranspilerModule
+import numpy as np
+from numba import from_dtype
+
+from casys.dsl._core.core_transpiler import MDK_DIMS_SIGNED_NB_TYPES, TranspilerModule
 from casys.dsl._core.descriptors import CactBufferDescriptor
-from casys.dsl._core.errors import TranspileError
 from casys.dsl._core.ir import Ir_CaSys
 from casys.dsl._core.debug.ast_timeline_tracking import get_tracker, f_tag_kernel, f_tag_transpiler_module
 
@@ -23,6 +24,8 @@ class GenerateKernelSignatures(TranspilerModule):
         trkr.enter_phase('Generating kernel function signatures')
 
         dims: Sequence[int] = ir.metadata.get(MDK_DIMS)
+        dims_signed_nb_types = ir.metadata.get(MDK_DIMS_SIGNED_NB_TYPES)
+
         dedicated_idx_ids: dict[str, str] = ir.step_func.metadata.get(MDK_DEDICATED_IDX_IDS)
         buffer_usage: BufferUsageInfo
 
@@ -37,28 +40,42 @@ class GenerateKernelSignatures(TranspilerModule):
 
             kernel.metadata.set(MDK_NEEDS_DEDICATED_IDX,needs_dedicated_idx)
             
-            buffer_args = [f'{b}_{fld}' for b,fld in CactBufferDescriptor.get_soa_pairs_multi(
-                descriptors=kernel.base.buffers.values(),
-                filter_predicate=buffer_usage.check_accesses
-            )]
+            get_field_buffer_nb_type = lambda field: from_dtype(field.field_type.true_type).__getitem__(args=[slice(None),*[slice(None) for _ in dims]])
+            
+            buffer_args = {
+                f'{b}_{fld}': get_field_buffer_nb_type(field)
+                for b,fld,field in CactBufferDescriptor.get_soa_pairs_multi( # type: ignore
+                    descriptors=kernel.base.buffers.values(),
+                    filter_predicate=buffer_usage.check_accesses,
+                    include_field_objects=True
+                )
+            }
 
-            pos_args = [f_kv_pos_ax(ax) for ax in range(len(dims))]
-            # size_args = [f_kv_size_ax(ax) for ax in range(len(dims))]
-            idx_args = [KV_WR_IDX, *[f_kv_wr_idx(b) for b in kernel.base.buffers if b in needs_dedicated_idx and buffer_usage.check_accesses(b)]]
+            pos_args = {
+                f_kv_pos_ax(ax):nb_type
+                for ax,nb_type in zip(range(len(dims)),dims_signed_nb_types)
+            }
+            idx_args = {
+                KV_WR_IDX:from_dtype(np.uint8)
+                , **{
+                    f_kv_wr_idx(b):from_dtype(np.uint8)
+                    for b in kernel.base.buffers if b in needs_dedicated_idx and buffer_usage.check_accesses(b)
+                }
+            }
 
-            args = [
-                *buffer_args,
-                *pos_args,
-                KV_TIMESTAMP,
-                *idx_args,
-            ]
+            args = {
+                **buffer_args,
+                **pos_args,
+                KV_TIMESTAMP: from_dtype(np.uint64),
+                **idx_args,
+            }
 
             kernel.metadata.set(MDK_SIGNATURE, args)
 
             kernel.ir_ast = ast.FunctionDef(
                 name=kernel.ir_ast.name,
                 args=ast.arguments(posonlyargs=[ ast.arg(arg) for arg in args ]),
-                body=kernel.ir_ast.body
+                body=kernel.ir_ast.body,
             )
 
             trkr.add_snapshot(

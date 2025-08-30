@@ -311,7 +311,7 @@ class MainWindow(QMainWindow):
             self,
             'History Length',
             f'How many history steps to save? (0–{max_hist})',
-            0, 0, max_hist
+            max_hist, 0, max_hist
         )
         if ok:
             self.lock.acquire()
@@ -341,7 +341,7 @@ class MainWindow(QMainWindow):
 
     def _activate_tool(self, tool: Tool, checked: bool) -> None:
         self.ui_model.tool_active = True
-        self.canvas.click_request = ClickRequest(callback=tool.callback, single_use=tool.single_use)
+        self.canvas.click_request = ClickRequest(callback=tool.callback, lock=self.lock, single_use=tool.single_use)
 
     def _update_info_labels(self) -> None:
         container = self.centralWidget()

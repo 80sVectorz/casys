@@ -2,11 +2,16 @@ KV_TIMESTAMP = 'kval_timestamp'
 KV_POS_AX = 'kval_p_ax'
 KV_SIZE_AX = 'kval_s_ax'
 KV_WR_IDX = 'kval_wr_idx'
+KV_N_SIM_STEP_REPEATS = 'kval_n_sim_step_repeats'
+KV_I_SIM_STEP_INTERNAL = 'kval_i_sim_step_internal'
 
 BASE_RESERVED_NAMES = {
     KV_TIMESTAMP,
     KV_POS_AX, KV_SIZE_AX,
     KV_WR_IDX,
+
+    KV_N_SIM_STEP_REPEATS,
+    KV_I_SIM_STEP_INTERNAL,
 }
 
 def f_kv_pos_ax(ax: int) -> str:

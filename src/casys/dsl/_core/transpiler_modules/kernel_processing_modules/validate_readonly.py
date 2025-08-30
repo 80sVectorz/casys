@@ -28,7 +28,6 @@ class ValidateReadonly(TranspilerModule):
 
             self.current_kernel = name
             (finder:=PatternFinder(ptrn_frozen_assigns)).visit(kernel.ir_ast)
-            print(finder.matches)
             for m in finder.matches:
                 t: str = m['id']
                 n: ast.Name = m['name']

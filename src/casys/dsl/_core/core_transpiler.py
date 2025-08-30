@@ -1,7 +1,8 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Type, TypedDict
 
-from numba.core.typeconv.castgraph import CastSet
+import numpy as np
+from numba.np.numpy_support import from_dtype
 
 if TYPE_CHECKING:
     from casys._step_func import SimStepFunc
@@ -12,7 +13,10 @@ from .ir import Ir_CaSys
 from casys.dsl._core.metadata_store import MetadataStore
 from casys.dsl._core.ir_metadata_specs.md_core_transpiler import (
     CoreConfig,
-    MDK_CORE_CONF, MDK_DIMS, MDK_CONSTANTS
+    MDK_CORE_CONF,
+    MDK_DIMS,
+    MDK_DIMS_SIGNED_NB_TYPES,
+    MDK_CONSTANTS
 )
 
 from casys.dsl._core.ca_system import CaSystem
@@ -46,8 +50,14 @@ class Transpiler:
 
         self.ir_obj = (ir_obj:=Ir_CaSys.from_step_func(step_func))
 
+        mdk_dims_signed_nb_types = tuple(
+            from_dtype(np.min_scalar_type(-dim))
+            for dim in constants.dims
+        )
+
         ir_obj.metadata.set(MDK_CORE_CONF, conf)
         ir_obj.metadata.set(MDK_DIMS, tuple(constants.dims))
+        ir_obj.metadata.set(MDK_DIMS_SIGNED_NB_TYPES, mdk_dims_signed_nb_types)
         ir_obj.metadata.set(MDK_CONSTANTS, constants_req)
 
     def transpile(self) -> CaSystem:

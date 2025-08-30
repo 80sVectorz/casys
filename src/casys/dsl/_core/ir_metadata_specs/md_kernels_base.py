@@ -5,16 +5,16 @@ import enum
 from operator import index
 from typing import TYPE_CHECKING, Sequence
 
+import numba
+
 if TYPE_CHECKING:
     from casys.dsl._core.ir import Ir_CaKernel
+    
 from casys.dsl._core.metadata_store import MetadataKey
 
 from functools import reduce
 
-if TYPE_CHECKING:
-    from casys.dsl._core.ir import Ir_CaKernel
-
-MDK_SIGNATURE = MetadataKey[list[str]]('', 'signature', factory=list, doc='The final JITed kernel function signature')
+MDK_SIGNATURE = MetadataKey[dict[str, numba.types.Type]]('', 'signature', factory=dict, doc='The final JITed kernel function signature')
 
 MDK_READONLY = MetadataKey[set[str]]('', 'readonly', doc='A set of variables ids that have been marked readonly.')
 MDK_POS_VARS = MetadataKey[dict[str,int]]('', 'pos_vars', factory=dict, doc='A dict that maps pos_var marked variables ids to their axes.')

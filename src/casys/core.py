@@ -128,11 +128,12 @@ class CaSim:
         while len(self._edit_queue):
             x, y, field_updates = self._edit_queue.pop()
             for field_buffer_name, value in field_updates:
-                idx = self.wr_indices[self.idx_lut[field_buffer_name]]
-                if self.timestamp != 0:
-                    self.buffers[field_buffer_name][idx, x, y] = value
-                else:
-                    self.buffers[field_buffer_name][:, x, y] = value
+                # idx = self.wr_indices[self.idx_lut[field_buffer_name]]
+                self.buffers[field_buffer_name][:, x, y] = value
+                # if self.timestamp != 0:
+                #     self.buffers[field_buffer_name][:, x, y] = value
+                # else:
+                #     self.buffers[field_buffer_name][:, x, y] = value
 
     def edit_cells(
         self,

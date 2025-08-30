@@ -1,4 +1,5 @@
 from __future__ import annotations
+import time
 from typing import Sequence, Type, TYPE_CHECKING, TypedDict
 
 from casys.dsl._core.ir_metadata_specs.md_stepfunc_base import MDK_DEDICATED_IDX_IDS, MDK_SIGNATURE, MDK_SIGNATURE_BUFFERS
@@ -37,8 +38,23 @@ class BaseTranspiler(Transpiler):
         trkr.enter_phase('Transpilation')
 
         try:
+            start_time = time.perf_counter()
+
             for module in self.pipeline:
                 module.process(ir)
+
+            end_time = time.perf_counter()
+
+            elapsed_time = end_time - start_time
+            message = 'Transpilation and Numba compilation completed in'
+            if elapsed_time < 1:
+                print(message, f"{elapsed_time * 1000:.2f} ms")
+            elif elapsed_time < 60:
+                print(message, f'{elapsed_time:.2f} s')
+            else:
+                minutes, seconds = divmod(elapsed_time, 60)
+                milliseconds = (seconds - int(seconds)) * 1000
+                print(message, f'{int(minutes)}:{int(seconds):02}:{int(milliseconds):03}')
         finally:
             if CASYS_CONFIG.debug_ast_timeline:
                 try:
@@ -47,7 +63,6 @@ class BaseTranspiler(Transpiler):
                 except:
                     log_warning('Saving AST timeline failed')
                     
-
         sys = CaSystem(
             step_func=self.ir_obj.step_func.base,
             sim_constants=self.sim_constants,
