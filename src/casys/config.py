@@ -34,8 +34,6 @@ class CasysConfig:
     :param debug_timeline_file_directory: The directory where timeline files will be saved.
     """
 
-    debug_dynsrc_mode: Literal['off', 'virtual', 'mirror'] = 'virtual'
-
     debug_disable_cpu_parallelization: bool = False
     debug_jit_nopython: bool = True
     debug_jit_inline_kernels: bool = True
@@ -44,7 +42,19 @@ class CasysConfig:
 
     debug_ast_origin_tracking: bool = True
 
+    _cache_files_dir: pathlib.Path | None = None
     _debug_files_dir: pathlib.Path | None = None
+
+    @property
+    def cache_files_dir(self) -> pathlib.Path:
+        if self._cache_files_dir: return self._cache_files_dir
+        self._cache_files_dir = get_entry_point_path().parent / '__casys_cache__'
+        self._cache_files_dir.mkdir(exist_ok=True)
+        return self._cache_files_dir
+
+    @cache_files_dir.setter
+    def cache_files_dir(self, v: pathlib.Path):
+        self._cache_files_dir = v
 
     @property
     def debug_files_dir(self) -> pathlib.Path:

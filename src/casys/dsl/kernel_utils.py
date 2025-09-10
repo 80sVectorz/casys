@@ -4,8 +4,8 @@ from typing import TYPE_CHECKING, Any, Literal, Sequence, cast
 
 
 if TYPE_CHECKING:
-    from casys._cac_type import cact_field, t_int_like
-    from casys.wrappers import CaCellType
+    from casys.spec.cac_type import cact_field, t_int_like
+    from casys.wrappers import CaCellTypeSpec
 
 import numpy as np
 
@@ -18,16 +18,16 @@ def step_func_split():
     """
     ...
 
-@MacroSpec(required=('buffers',), optional=())
-def step_func_swap(buffers: list[CaCellType | object]):
+@MacroSpec(required=('layers',), optional=())
+def step_func_swap(layers: list[CaCellTypeSpec | object]):
     """
-    Dummy function for denoting double buffer swap of `*buffers`.
-    Tells the transpiler that the given buffers need to be swapped
+    Dummy function for denoting double buffer swap of `layers`.
+    Tells the transpiler that the SoA field buffers of the given layers need to be swapped
     before any new kernel calls are made.
 
     **Notes**:
         The swap placement will be optimized by the transpiler.
-        This is done by for example analyzing where buffers are actually used.
+        This is done by for example analyzing where SoA field buffers are actually used.
     """
     ...
 

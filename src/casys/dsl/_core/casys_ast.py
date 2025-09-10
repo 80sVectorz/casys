@@ -2,9 +2,12 @@ from __future__  import annotations
 
 from typing import TYPE_CHECKING, Callable
 
+from casys.dsl._core.schema.soa_layout import SoaField
+
 if TYPE_CHECKING:
     from casys.dsl._core.ir import Ir_Base
     from casys.dsl._core.ir import Ir_CaSys
+    from casys.dsl._core.schema.schema_base import Schema
 
 from dataclasses import dataclass, field, is_dataclass, fields
 import ast
@@ -13,13 +16,15 @@ from .descriptors import KernelCallDescriptor
 
 CASYS_META = 'casys_meta_data'
 
-@dataclass(kw_only=True)
+@dataclass(kw_only=True, slots=True)
 class AstNodeMeta:
     node_origin: int | None = None
 
     source_ir: Ir_Base | None = None
-    verified_bounds: bool = field(default=False)
-    local_access: bool  = False # If subscript buffer access is using the kernel's position
+    verified_bounds: bool = False
+    local_access: bool  = False # Wether a subscript buffer access is using the kernel's position
+
+    evaluates_to_uint_bool: bool = False # Does a expression always evaluate to 1 or 0
 
 def copy_meta(new_node: ast.AST, node: ast.AST) -> AstNodeMeta:
     if hasattr(node, CASYS_META):
@@ -68,15 +73,16 @@ class Cs_KernelCall(AutoFieldsAst):
 
 @dataclass()
 class Cs_ParallelGroup(AutoFieldsAst):
+    # SoA field level granularity
     swaps: list[str]
     calls: list[KernelCallDescriptor]
-    sync_r2w: list[tuple[str,str]]
-    sync_w2r: list[tuple[str,str]]
+    sync_r2w: list[str]
+    sync_w2r: list[str]
     
 @dataclass()
 class Cs_DoubleBufferSwaps(AutoFieldsAst):
-    buffers: list[str]
-    
+    layers: list[str] # Group schema (aka layers) level granularity
+
 # ———— Kernel function nodes —————
 
 class Cs_Macro(ast.Call):
@@ -125,18 +131,28 @@ class Cs_KPos(AutoFieldsAst, ast.expr):
     """
     ax: int
 
-@dataclass
-class Cs_BufferRef(AutoFieldsAst, ast.expr):
-    b: str
-    f: str
-    ctx: ast.Load | ast.Store
+# @dataclass
+# class Cs_LayerFieldRef(AutoFieldsAst, ast.expr):
+#     l: str
+#     f: str
+#     ctx: ast.Load | ast.Store
 
 @dataclass
-class Cs_WrIdx(AutoFieldsAst):
+class Cs_SchemaRef[T_schema: Schema](AutoFieldsAst, ast.expr):
+    s: T_schema
+    ctx: ast.expr_context
+
+@dataclass
+class Cs_SoaFieldRef(AutoFieldsAst, ast.expr):
+    field: SoaField
+    ctx: ast.expr_context
+
+@dataclass
+class Cs_WrIdx(AutoFieldsAst, ast.expr):
     ...
 
 @dataclass
-class Cs_RdIdx(AutoFieldsAst):
+class Cs_RdIdx(AutoFieldsAst, ast.expr):
     ...
 
 @dataclass

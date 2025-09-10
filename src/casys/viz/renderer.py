@@ -3,8 +3,6 @@ from typing import Any
 
 from PySide6.QtWidgets import QApplication
 from casys.sim_manager import SimManager
-from dataclasses import dataclass
-import threading
 
 from .gui.main_window import MainWindow
 from .gui.canvas_widget import Layer, LayerSpec

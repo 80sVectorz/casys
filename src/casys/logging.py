@@ -21,6 +21,7 @@ def setup_logging(verbose: bool = False) -> None:
     Args:
         verbose: If True, set level to DEBUG, else INFO.
     """
+
     logger = logging.getLogger('casys')
     level = logging.DEBUG if verbose else logging.INFO
     logger.setLevel(level)

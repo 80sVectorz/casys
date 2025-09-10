@@ -2,10 +2,13 @@ from typing import Any
 from PySide6.QtCore import QEvent, QObject
 from vispy.app import KeyEvent, MouseEvent, use_app
 from vispy.util.keys import Key
+
+from casys.viz.tools.core import ToolEvent, ToolManager, MOD_SHIFT, MOD_CTRL, MOD_ALT, MOD_META
 use_app('pyside6')
 from vispy.scene import SceneCanvas
 from vispy import gloo
 import numpy as np
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 import threading
@@ -14,7 +17,7 @@ import pathlib
 from casys.sim_manager import SimManager
 
 # GLSL sources
-VERT_QUAD = """
+VERT_QUAD = """//glsl
 #version 330 core
 in  vec2 in_pos;
 in  vec2 in_uv;
@@ -22,7 +25,7 @@ out vec2 v_uv;
 void main() { v_uv = in_uv; gl_Position = vec4(in_pos,0,1); }
 """
 
-COMMON_GLSL = """
+COMMON_GLSL = """//glsl
 #version 330 core
 
 uniform sampler2D u_tex;
@@ -72,39 +75,100 @@ vec3 hsv2rgb(vec3 c) {
   vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
   return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
+
+// ---- Analytic AA helpers -----------------------------------------------------
+// You can override the pixel softness globally by #defining U_AA_SCALE in user code.
+#ifndef U_AA_SCALE
+#define U_AA_SCALE 1.0
+#endif
+
+// Anti-aliased hard step using derivative-based width.
+float aa_step(float edge, float x) {
+    float w = fwidth(x) * U_AA_SCALE;
+    return smoothstep(edge - w, edge + w, x);
+}
+
+// Given a signed distance (sdf) where sdf < 0 is "inside",
+// return a smooth coverage [0..1].
+float aa_coverage(float sdf) {
+    float w = fwidth(sdf) * U_AA_SCALE + 1e-7;
+    return clamp(0.5 - sdf / w, 0.0, 1.0);
+}
+
+// --- SDF primitives in *cell space* (use p = cell_uv() - 0.5) ----------------
+float sd_box(vec2 p, vec2 half_size, float radius) {
+    vec2 q = abs(p) - half_size + radius;
+    return length(max(q, 0.0)) - radius;
+}
+
+float sd_circle(vec2 p, float r) {
+    return length(p) - r;
+}
+
+// Thick line segment from a to b with radius r, all in cell space.
+float sd_segment(vec2 p, vec2 a, vec2 b, float r) {
+    vec2 pa = p - a, ba = b - a;
+    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * h) - r;
+}
+
+// AA wrappers that directly return a coverage [0..1]
+float aa_box(vec2 p, vec2 half_size, float radius) {
+    return aa_coverage(sd_box(p, half_size, radius));
+}
+
+float aa_circle(vec2 p, float radius) {
+    return aa_coverage(sd_circle(p, radius));
+}
+
+float aa_segment(vec2 p, vec2 a, vec2 b, float radius) {
+    return aa_coverage(sd_segment(p, a, b, radius));
+}
 """
 
-FALLBACK_FRAG = """
+FALLBACK_FRAG = """//glsl
 void main(){
     FragColor = vec4(float(sample_meta));
 }
 """
 
-CHECKERBOARD_FRAG = COMMON_GLSL+"""
+CHECKERBOARD_FRAG = COMMON_GLSL+"""//glsl
 
 uniform float u_checker_size;  // size of each square in pixels
-uniform float u_border_radius; // border radius in world_space;
-uniform ivec2 u_window_dims; // Window dimensions in pixels
+uniform float u_border_radius; // border radius in world cells
+uniform ivec2 u_window_dims;   // Window dimensions in pixels
 
 void main() {
     ivec2 pix = ivec2(gl_FragCoord.xy);
     int cx = pix.x / int(u_checker_size);
     int cy = pix.y / int(u_checker_size);
     float checker = mod(float(cx + cy), 2.0);
-    vec3 light = vec3(1-0.95);
-    vec3 dark  = vec3(1-0.85);
+    vec3 light = vec3(1.0 - 0.95);
+    vec3 dark  = vec3(1.0 - 0.85);
 
-    float screen_ratio = u_window_dims.y/u_window_dims.x;
-    float border_radius = u_border_radius;
-    vec2 border = abs(world_uv() - u_dims*0.5) * 2;
-    float border_d = (max(border.x,border.y) - (u_dims.x-border_radius)) / border_radius;
-    if (border_d <= 1 && border_d >= 0) {
-        light = mix(light, vec3(0,1,0), border_d);
-        dark = mix(dark, vec3(0,1,0), border_d);
+    // Rectangular border in world (cell) units
+    float br = u_border_radius;
+    vec2 half = vec2(u_dims) * 0.5;
+    vec2 d = abs(world_uv() - half) * 2.0;
+    vec2 inner = vec2(u_dims) - vec2(br) * 2.0;
+
+    // Rectangular single-edge feather, identical to square behavior when u_dims.x==u_dims.y
+    vec2 b = abs(world_uv() - u_dims * 0.5) * 2.0;
+
+    // Equalize aspect: measure Y in X-units so the Chebyshev radius works on rectangles.
+    float cheb = max(b.x, b.y * (u_dims.x / u_dims.y));
+
+    float feather = (cheb - (u_dims.x - u_border_radius)) / u_border_radius;
+
+    if (feather >= 0.0 && feather <= 1.0) {
+        vec3 tint = vec3(0.0, 1.0, 0.0);
+        light = mix(light, tint, feather);
+        dark  = mix(dark,  tint, feather);
     }
 
     FragColor = vec4(mix(light, dark, checker), 1.0);
 }
+
 """
 
 @dataclass
@@ -114,6 +178,7 @@ class ClickRequest:
     single_use: bool
     live: bool = False
     dirty: bool = False
+    rect_wrap: bool = False  # opt-in: split rectangles across torus seams
 
 @dataclass
 class LayerSpec:
@@ -164,6 +229,8 @@ class CanvasWidget(SceneCanvas):
     layers: list[Layer]
     lock: threading.Lock
     click_request: ClickRequest | None = None
+
+    tool_mgr: ToolManager | None = None
 
     def __init__(
         self,
@@ -255,7 +322,8 @@ class CanvasWidget(SceneCanvas):
 
         self.bg_prog.bind(self.vbo)
         self.bg_prog['u_cam'] = cam
-        self.bg_prog['u_border_radius'] = 0.005 * self.sim.sim.dims[0] * self.zoom
+        W, H = self.sim.sim.dims
+        self.bg_prog['u_border_radius'] = 0.005 * min(W, H) * self.zoom
         self.bg_prog['u_window_dims'] = self.size
         self.bg_prog.draw(mode='triangles')
 
@@ -271,37 +339,232 @@ class CanvasWidget(SceneCanvas):
             layer.prog.draw('triangles')
 
     # --- spatial math helpers ---
+
     def _compute_cam(self) -> np.ndarray:
         """Return 3x3 affine matrix (scale and translate) used in shaders."""
         s = self.zoom
         tx, ty = self.pan
-        return np.array([[s, 0, tx], [0, s*self.screen_ratio, ty*self.screen_ratio], [0, 0, 1]], dtype="f4")
+        W, H = map(float, self.sim.sim.dims)
+        y_corr = self.screen_ratio * (W / H)  # = (h/w) * (W/H)
+        return np.array(
+            [[s, 0, tx],
+            [0, s * y_corr, ty * y_corr],
+            [0, 0, 1]],
+            dtype='f4',
+        )
 
     def _screen_to_uv(self, x: float, y: float) -> np.ndarray:
-        """
-        Map pixel coords (origin top-left) → normalised UV ([0-1]x[0-1])
-        **after** current pan/zoom.
-        """
+        """Return wrapped UV in [0..1]^2 that matches the shader path."""
         w, h = self.size
-        uv_screen = np.array([x / w, 1.0 - y / h], dtype="f4")   # flip Y
-        # invert affine: uv_world = (uv_screen - pan) / zoom
-        return (uv_screen - self.pan) / self.zoom
-    
-    def _screen_to_grid(self, x: float, y:float) -> tuple[int,int]:
-        w, h = self.size
-        dims = self.sim.sim.dims
-        uv_screen = np.array([x / w, self.screen_ratio - y / h * self.screen_ratio], dtype="f4")
-        uv_screen[0] += self.pan[0] / self.zoom
-        uv_screen[1] += self.pan[1]*self.screen_ratio / self.zoom
-        uv_screen *= self.zoom
-        screen_coord = np.floor(uv_screen * np.array(self.sim.sim.dims)) % dims
+        uv_screen = np.array([x / w, 1.0 - (y / h)], dtype='f4')
 
-        return (int(screen_coord[0]),int(screen_coord[1]))
+        s = self.zoom
+        W, H = self.sim.sim.dims
+        y_corr = self.screen_ratio * (W / H)  # must match _compute_cam
+
+        tx, ty = self.pan
+        uv_cam = np.array(
+            [s * uv_screen[0] + tx, s * y_corr * uv_screen[1] + ty * y_corr],
+            dtype='f4',
+        )
+        return uv_cam % 1.0
+
+    def _screen_to_grid(self, x: float, y: float) -> tuple[int, int]:
+        uv = self._screen_to_uv(x, y)
+        W, H = self.sim.sim.dims
+        ix = int(np.floor(uv[0] * W)) % W
+        iy = int(np.floor(uv[1] * H)) % H
+        return (ix, iy)
+    
+    def _wrap_span_shortest(self, i0: int, i1: int, n: int) -> list[tuple[int, int]]:
+        """Return 1 or 2 inclusive index ranges for the shortest wrap path."""
+        fwd = (i1 - i0) % n
+        bwd = (i0 - i1) % n
+        if fwd <= bwd:
+            s, e = i0, (i0 + fwd) % n
+        else:
+            s, e = (i0 - bwd) % n, i0
+        return [(s, e)] if s <= e else [(s, n - 1), (0, e)]
+
+    def _decompose_wrapped_rect(
+        self, a: tuple[int, int], b: tuple[int, int]
+    ) -> list[tuple[tuple[int, int], tuple[int, int]]]:
+        """Split an a->b rectangle into 1..4 inclusive subrects on a torus grid."""
+        W, H = self.sim.sim.dims
+        xs = self._wrap_span_shortest(a[0], b[0], W)
+        ys = self._wrap_span_shortest(a[1], b[1], H)
+        rects: list[tuple[tuple[int, int], tuple[int, int]]] = []
+        for (x0, x1) in xs:
+            for (y0, y1) in ys:
+                rects.append(((x0, y0), (x1, y1)))
+        return rects
+    
+    def grid_to_screen_px(
+        self,
+        gx: float,
+        gy: float,
+        *,
+        align: str = 'center',
+        prefer_center_tile: bool = True,
+        tile_ref_px: tuple[int, int] | None = None,
+    ) -> np.ndarray:
+        """
+        Map a grid coordinate (gx, gy) to a screen pixel position under the current
+        camera and toroidal wrapping.
+
+        If tile_ref_px is provided, the wrapped copy is chosen to be closest to that
+        reference pixel in screen-UV space. This makes positions stable relative to
+        the widget, preventing 'flips' when the cell is off-screen.
+
+        Args:
+            gx: Grid x index. Floats allowed for subcell positions.
+            gy: Grid y index. Floats allowed for subcell positions.
+            align: 'center' uses the cell center; 'origin' uses the cell's min corner.
+            prefer_center_tile: If True and no tile_ref_px is given, choose the copy
+                nearest the viewport center when zoomed in.
+            tile_ref_px: Optional (x, y) screen pixel that acts as an anchor for
+                choosing the wrap copy nearest to the widget.
+
+        Returns:
+            np.ndarray of shape (2,) as [px, py].
+        """
+        w, h = self.size
+        W, H = self.sim.sim.dims
+
+        s = self.zoom
+        tx, ty = self.pan
+        y_corr = self.screen_ratio * (W / H)
+
+        if align == 'center':
+            u = (gx + 0.5) / W
+            v = (gy + 0.5) / H
+        else:
+            u = gx / W
+            v = gy / H
+
+        ux = (u - tx) / s
+        uy = (v - ty * y_corr) / (s * y_corr)
+
+        period_x = 1.0 / s
+        period_y = 1.0 / (s * y_corr)
+
+        if tile_ref_px is not None:
+            rx = tile_ref_px[0] / w
+            ry = 1.0 - (tile_ref_px[1] / h)
+            if period_x > 0.0:
+                nx = round((rx - ux) / period_x)
+                ux += nx * period_x
+            if period_y > 0.0:
+                ny = round((ry - uy) / period_y)
+                uy += ny * period_y
+        else:
+            if prefer_center_tile and period_x < 1.0:
+                ux += round((0.5 - ux) / period_x) * period_x
+            if prefer_center_tile and period_y < 1.0:
+                uy += round((0.5 - uy) / period_y) * period_y
+
+        ux %= 1.0
+        uy %= 1.0
+
+        px = int(ux * w)
+        py = int((1.0 - uy) * h)
+        return np.array([px, py])
+    
+    def grid_to_unwrapped_px(
+        self,
+        gx: float,
+        gy: float,
+        *,
+        align: str = 'center',
+    ) -> tuple[float, float, float, float]:
+        """
+        Return unwrapped pixel coordinates and tile periods in pixels.
+
+        Args:
+            gx: Grid x index.
+            gy: Grid y index.
+            align: 'center' for cell center, 'origin' for min corner.
+
+        Returns:
+            (px, py, period_x_px, period_y_px)
+        """
+        w, h = self.size
+        W, H = self.sim.sim.dims
+
+        s = self.zoom
+        tx, ty = self.pan
+        y_corr = self.screen_ratio * (W / H)
+
+        if align == 'center':
+            u = (gx + 0.5) / W
+            v = (gy + 0.5) / H
+        else:
+            u = gx / W
+            v = gy / H
+
+        ux = (u - tx) / s
+        uy = (v - ty * y_corr) / (s * y_corr)
+
+        px = ux * w
+        py = (1.0 - uy) * h
+
+        period_x_px = w / s
+        period_y_px = h / (s * y_corr)
+        return px, py, period_x_px, period_y_px
+
+
+    def visible_tiles(self) -> list[tuple[int, int]]:
+        """
+        Compute which torus tiles (kx, ky) intersect the viewport [0..w) x [0..h).
+
+        Note: Y uses bottom-anchored intervals because grid_to_unwrapped_px(..., align='origin')
+        returns the bottom edge for the origin tile due to the (1 - uy) flip.
+        """
+        w, h = self.size
+        px0, py0, perx, pery = self.grid_to_unwrapped_px(0, 0, align='origin')
+
+        def x_candidates(p0: float, per: float, L: float) -> list[int]:
+            kmin = math.floor((-p0 - per) / per) - 1
+            kmax = math.ceil((L - p0) / per) + 1
+            out: list[int] = []
+            for k in range(kmin, kmax + 1):
+                left = p0 + k * per
+                right = left + per
+                if right > 0 and left < L:
+                    out.append(k)
+            return sorted(set(out))
+
+        def y_candidates(p0: float, per: float, L: float) -> list[int]:
+            # For each ky, the vertical span is [bottom - per, bottom]
+            kmin = math.floor((-p0) / per) - 2
+            kmax = math.ceil((L - p0) / per) + 2
+            out: list[int] = []
+            for k in range(kmin, kmax + 1):
+                bottom = p0 + k * per
+                top = bottom - per
+                if bottom > 0 and top < L:
+                    out.append(k)
+            return sorted(set(out))
+
+        xs = x_candidates(px0, perx, w)
+        ys = y_candidates(py0, pery, h)
+        return [(kx, ky) for kx in xs for ky in ys]
 
     # --- mouse handlers --- #
 
     def on_mouse_press(self, ev: MouseEvent):
         if ev.button == 1:
+            if self.tool_mgr is not None and self._tool_active():
+                gx, gy = self._screen_to_grid(*ev.pos)
+                self.tool_mgr.route(ToolEvent(
+                    kind='down',
+                    gpos=(gx, gy),
+                    button=ev.button,
+                    modifiers=self._mods_mask(ev),
+                ))
+                ev.handled = True
+                return
+
             self._last_pos = ev.pos
 
             cr = self.click_request
@@ -315,17 +578,33 @@ class CanvasWidget(SceneCanvas):
             self._dragging = True
 
     def on_mouse_release(self, ev: MouseEvent):
+        if ev.button == 1 and self.tool_mgr is not None and self._tool_active():
+            gx, gy = self._screen_to_grid(*ev.pos)
+            self.tool_mgr.route(ToolEvent(
+                kind='up',
+                gpos=(gx, gy),
+                button=ev.button,
+                modifiers=self._mods_mask(ev),
+            ))
+            ev.handled = True
+            return
+
         if ev.button == 1:
             cr = self.click_request
             if cr is not None and cr.live:
 
                 cr.lock.acquire()
+                was_playing = not self.sim.paused
                 try:
-                    was_playing = not self.sim.paused
-                    if was_playing:
-                        self.sim.pause()
 
-                    cr.callback(self._screen_to_grid(*tuple(self._last_pos.astype(np.int_))), self._screen_to_grid(*ev.pos)) # type: ignore
+                    p0 = self._screen_to_grid(*tuple(self._last_pos.astype(np.int_)))
+                    p1 = self._screen_to_grid(*ev.pos)
+
+                    if cr.rect_wrap:
+                        for a, b in self._decompose_wrapped_rect(p0, p1):
+                            cr.callback(a, b)
+                    else:
+                        cr.callback(p0, p1)
                 finally:
                     cr.lock.release()
 
@@ -342,6 +621,12 @@ class CanvasWidget(SceneCanvas):
             self._last_pos = None
 
     def on_mouse_move(self, ev: MouseEvent):
+        if self.tool_mgr is not None and self._tool_active():
+            gx, gy = self._screen_to_grid(*ev.pos)
+            self.tool_mgr.route(ToolEvent(kind='move', gpos=(gx, gy)))
+            ev.handled = True
+            return
+
         if not self._dragging:
             return
 
@@ -370,7 +655,6 @@ class CanvasWidget(SceneCanvas):
 
         # adjust pan so (uv_screen) stays fixed
         self.pan += (old_z - new_z) * uv_screen
-        # print(f"[DEBUG zoom] zoom={self.zoom:.4f}, pan={self.pan}")
 
         self.update()
 
@@ -389,11 +673,43 @@ class CanvasWidget(SceneCanvas):
         # store for next resize
         self._last_size = (new_w, new_h)
 
+    # ---- ToolManager stuff ----
+
+    def set_tool_manager(self, mgr: ToolManager) -> None:
+        self.tool_mgr = mgr
+
+    def _tool_active(self) -> bool:
+        """True if a modal or oneshot tool is currently active."""
+        tm = self.tool_mgr
+        if tm is None:
+            return False
+        # Prefer public accessors if you have them:
+        active_modal = getattr(tm, 'active_modal', lambda: None)()
+        is_one = getattr(tm, 'is_oneshot_active', lambda: False)()
+        return bool(active_modal) or bool(is_one)
+
+    def _mods_mask(self, ev: MouseEvent) -> int:
+        m = 0
+        if Key('Shift') in ev.modifiers:
+            m |= MOD_SHIFT
+        if Key('Control') in ev.modifiers:
+            m |= MOD_CTRL
+        if Key('Alt') in ev.modifiers:
+            m |= MOD_ALT
+        if Key('Meta') in ev.modifiers:
+            m |= MOD_META
+        return m
+
     # ---------------------
 
     def on_key_press(self, ev: KeyEvent):
         match ev.key:
             case 'Escape':
+                if self.tool_mgr is not None and self._tool_active():
+                    self.tool_mgr.cancel()
+                    ev.handled = True
+                    return
+
                 ev.handled = True
                 return    
 

@@ -2,11 +2,11 @@ from os import write
 from typing import DefaultDict, Sequence, TYPE_CHECKING
 
 if TYPE_CHECKING: 
-    from casys.dsl._core.ir_metadata_specs.md_kernels_base import BufferUsageInfo
+    from casys.dsl._core.soa_field_usage_info_helper import SoaFieldUsageInfo
+    from casys.spec.ca_layer_spec import CaLayerSpec
 
 from collections import defaultdict
 
-from casys.dsl._core.descriptors import CactBufferDescriptor
 from casys.dsl._core.core_transpiler import TranspilerModule
 from casys.dsl._core.errors import TranspileError
 from casys.dsl._core.ir import Ir_CaSys
@@ -14,22 +14,23 @@ from casys.dsl._core.debug.ast_timeline_tracking import get_tracker, f_tag_kerne
 
 import ast
 from casys.dsl._core import casys_ast
-from casys._ast_pattern_utils.ast_pattern_engine import PatternFinder, SingleOccurrenceFinder, Collect, Bind, NodePattern, Filter, OneOrMore
+from casys._ast_pattern_utils.ast_pattern_engine import PatternFinder, Collect, Bind, NodePattern
 
 from casys.dsl._core.ir_metadata_specs.md_kernels_base import (
     MDK_ALIASES,
-    MDK_BUFFER_USAGE_INFO,
-    UnfinishedBufferUsageInfo,
+    MDK_SOA_FIELD_USAGE_INFO,
 )
 
-class AnalyzeBufferUsage(TranspilerModule):
+from casys.dsl._core.soa_field_usage_info_helper import UnfinishedSoaFieldUsageInfo
+
+class AnalyzeSoaFieldsUsage(TranspilerModule):
     def process(self, ir: Ir_CaSys) -> None:
         trkr = get_tracker()
-        trkr.enter_phase('Analyzing kernel buffer usage')
+        trkr.enter_phase('Analyzing kernel SoA fields usage')
 
         aliases: dict[str, ast.AST]
 
-        buffer_usage_info: BufferUsageInfo
+        field_usage_info: SoaFieldUsageInfo
 
         def check_local(tuple_node: ast.Tuple) -> bool:
             """Checks if slice is equal to the kernel position"""
@@ -47,13 +48,12 @@ class AnalyzeBufferUsage(TranspilerModule):
                     return False
             return True
 
-        ptrn_buffer_ref = [
+        ptrn_soa_field_ref = [
             Collect(
                 pattern=NodePattern(
                     node_type=ast.Subscript,
-                    value=NodePattern(casys_ast.Cs_BufferRef, b=Bind('b'), f=Bind('f')),
-                    ctx = Bind('ctx'),
-                    slice = Bind('slice')
+                    value=NodePattern(casys_ast.Cs_SoaFieldRef, field=Bind('fld'), ctx=Bind('ctx')),
+                    slice=Bind('slice')
                 ),
                 key='subscript'
             ),
@@ -61,15 +61,17 @@ class AnalyzeBufferUsage(TranspilerModule):
 
         for name, kernel in ir.kernels.items():
             aliases = kernel.metadata.get(MDK_ALIASES)
-            buffer_usage_info = UnfinishedBufferUsageInfo(kernel)
+            field_usage_info = UnfinishedSoaFieldUsageInfo(ir)
 
-            (finder := FindGuaranteedBufferAccesses()).visit(kernel.ir_ast)
-            guaranteed_buffer_writes, guaranteed_buffer_reads = finder.get_guaranteed_reads_and_writes()
+            (finder:=FindGuaranteedSoaFieldAccesses()).visit(kernel.ir_ast)
+            guaranteed_field_writes, guaranteed_field_reads = finder.get_guaranteed_reads_and_writes()
 
-            (finder:=PatternFinder(ptrn_buffer_ref)).visit(kernel.ir_ast)
+            (finder:=PatternFinder(ptrn_soa_field_ref)).visit(kernel.ir_ast)
 
             for m in finder.matches:
-                b,f = m['b'], m['f']
+                fld = m['fld']
+
+                f = fld.name
 
                 slice_tuple: ast.Tuple = m['slice']
 
@@ -79,13 +81,13 @@ class AnalyzeBufferUsage(TranspilerModule):
 
                 match m['ctx']:
                     case ast.Load():
-                        buffer_usage_info.add_read(b,f, is_local=is_local)
+                        field_usage_info.add_read(f, is_local=is_local)
 
                     case ast.Store():
-                        is_guaranteed = (b,f) in guaranteed_buffer_writes
-                        buffer_usage_info.add_write(b,f, guaranteed=is_guaranteed)
+                        is_guaranteed = f in guaranteed_field_writes
+                        field_usage_info.add_write(f, guaranteed=is_guaranteed)
 
-            kernel.metadata.set(MDK_BUFFER_USAGE_INFO, buffer_usage_info.finalized())
+            kernel.metadata.set(MDK_SOA_FIELD_USAGE_INFO, field_usage_info.finalized())
 
             if finder.matches:
                 trkr.add_snapshot(
@@ -95,14 +97,14 @@ class AnalyzeBufferUsage(TranspilerModule):
 
         trkr.exit_phase()
 
-class FindGuaranteedBufferAccesses(ast.NodeVisitor):
-    writes: set[tuple[str,str]]
-    writes_before_return: dict[int, set[tuple[str,str]]]
-    conditional_writes: list[set[tuple[str,str]]]
+class FindGuaranteedSoaFieldAccesses(ast.NodeVisitor):
+    writes: set[str]
+    writes_before_return: dict[int, set[str]]
+    conditional_writes: list[set[str]]
 
-    reads: set[tuple[str,str]]
-    reads_before_return: dict[int, set[tuple[str,str]]]
-    conditional_reads: list[set[tuple[str,str]]]
+    reads: set[str]
+    reads_before_return: dict[int, set[str]]
+    conditional_reads: list[set[str]]
 
     conditional_depth: int = 0
 
@@ -120,9 +122,9 @@ class FindGuaranteedBufferAccesses(ast.NodeVisitor):
         self.visit_While = self.on_conditional_block
         self.visit_For = self.on_conditional_block
 
-    def get_guaranteed_reads_and_writes(self) -> tuple[set[tuple[str,str]], set[tuple[str,str]]]:
-        intersected_set_writes: set[tuple[str,str]] | None = None
-        intersected_set_reads: set[tuple[str,str]] | None = None
+    def get_guaranteed_reads_and_writes(self) -> tuple[set[str], set[str]]:
+        intersected_set_writes: set[str] | None = None
+        intersected_set_reads: set[str] | None = None
 
         for k,v in self.writes_before_return.items():
             if intersected_set_writes is None:
@@ -138,24 +140,25 @@ class FindGuaranteedBufferAccesses(ast.NodeVisitor):
 
             intersected_set_reads = intersected_set_reads.intersection(v)
 
-        intersected_set_writes: set[tuple[str,str]] | None = intersected_set_writes if intersected_set_writes else set()
-        intersected_set_reads: set[tuple[str,str]] | None = intersected_set_reads if intersected_set_reads else set()
+        intersected_set_writes: set[str] | None = intersected_set_writes if intersected_set_writes else set()
+        intersected_set_reads: set[str] | None = intersected_set_reads if intersected_set_reads else set()
 
         return intersected_set_writes, intersected_set_reads # type: ignore
     
     def visit_Subscript(self, node: ast.Subscript) -> None:
-        if isinstance(node.value, casys_ast.Cs_BufferRef):
+        if isinstance(node.value, casys_ast.Cs_SoaFieldRef):
+            fld = node.value.field.name
             match node.ctx:
                 case ast.Load():
                     if self.conditional_depth == 0:
-                        self.reads.add((node.value.b,node.value.f))
+                        self.reads.add(fld)
                     else:
-                        self.conditional_reads[-1].add((node.value.b,node.value.f))
+                        self.conditional_reads[-1].add(fld)
                 case ast.Store():
                     if self.conditional_depth == 0:
-                        self.writes.add((node.value.b,node.value.f))
+                        self.writes.add(fld)
                     else:
-                        self.conditional_writes[-1].add((node.value.b,node.value.f))
+                        self.conditional_writes[-1].add(fld)
 
         self.visit(node.slice)
 

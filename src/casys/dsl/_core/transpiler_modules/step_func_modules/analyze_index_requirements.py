@@ -1,7 +1,7 @@
 from casys.dsl._core.core_transpiler import TranspilerModule
 from casys.dsl._core.ir import Ir_CaSys
 from casys.dsl._core.debug.ast_timeline_tracking import TAG_STEP_FUNC, get_tracker, f_tag_transpiler_module
-from casys.dsl._core.ir_metadata_specs.md_stepfunc_base import MDK_DEDICATED_IDX_IDS
+from casys.dsl._core.ir_metadata_specs.md_stepfunc_base import MDK_NEEDS_DEDICATED_IDX
 from casys.dsl._core.kernel_values import KV_WR_IDX
 
 from casys.dsl._core import casys_ast
@@ -25,12 +25,14 @@ class AnalyzeIndexRequirements(TranspilerModule):
 
         for m in finder.matches:
             swapped_buffers_merged.update(m['buffers'])
-        
-        dedicated_index_ids = {
-            buffer:f'{KV_WR_IDX}_{buffer}' for buffer in swapped_buffers_merged
-        }
 
-        ir.step_func.metadata.set(MDK_DEDICATED_IDX_IDS, dedicated_index_ids)
+        needs_dedicated_idx = [
+            k for k in
+            ir.step_func.base.layers.keys()
+            if k in swapped_buffers_merged
+        ]
+        
+        ir.step_func.metadata.set(MDK_NEEDS_DEDICATED_IDX, needs_dedicated_idx)
 
         if finder.matches:
             trkr.add_snapshot(

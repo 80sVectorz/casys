@@ -20,8 +20,6 @@ by ``ast_timeline_tracking`` for a much lighter, line‑oriented diff.
 
 import copy
 import ast
-import difflib
-from functools import singledispatch
 
 # ---------------- #
 # Helper utilities #
@@ -30,7 +28,7 @@ from functools import singledispatch
 def _placeholder_str(node: ast.AST) -> str:
     """Return a str ast dump, human-friendly placeholder for *node*."""
 
-    return f'<<{ast_recursive_dump(node).replace("\n", "").replace("    ","")}>>'
+    return '<<'+ast_recursive_dump(node).replace("'", "\'").replace('"','\"').replace("\n", "").replace("    ","")+'>>'
 
 def _make_placeholder(node: ast.AST) -> ast.AST:
     """Convert *node* to a valid AST subtree that unparses as a placeholder."""

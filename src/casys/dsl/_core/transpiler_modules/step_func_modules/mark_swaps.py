@@ -8,6 +8,7 @@ from casys.dsl._core.errors import TranspileError
 from casys.dsl._core.ir import Ir_CaSys
 from casys.dsl._core.debug.ast_timeline_tracking import TAG_STEP_FUNC, get_tracker
 
+from casys.dsl._core.ir_metadata_specs.md_core_transpiler import MDK_SOA_LAYOUT
 from casys.dsl._core.ir_metadata_specs.md_stepfunc_base import MDK_SWAP_TARGETS
 
 import ast
@@ -21,7 +22,8 @@ class MarkSwaps(TranspilerModule):
         trkr = get_tracker()
         trkr.enter_phase('Marking double buffer swaps in simulation step function')
 
-        buffers = ir.step_func.base.buffers
+        world_schema = ir.world_schema
+        soa_layout = ir.metadata.get(MDK_SOA_LAYOUT)
         ir_ast = ir.step_func.ir_ast
 
         ptrn_swap_calls = [
@@ -31,29 +33,28 @@ class MarkSwaps(TranspilerModule):
             )
         ]
 
-        swapped_buffers_merged: set[str] = set()
+        swapped_layers_merged: set[str] = set()
 
         def handle_swap_calls(m: dict[str, Any]) -> list[ast.AST]:
             swap_calls: list[ast.Expr] = m['swap_calls']
             
-            target_buffers: set[str] = set()
+            target_layers: set[str] = set()
             for expr in swap_calls:
                 swap_call: ast.Call = expr.value # type: ignore
                 args: dict[str, Any] = core_macros.MacroSpec.parse_and_validate(kernel_utils.step_func_swap,swap_call)
-                if 'buffers' in args:
-                    arg_buffers: list[Any] = cast(ast.List, args['buffers']).elts
-                    for node in arg_buffers:
+                if 'layers' in args:
+                    arg_layers: list[Any] = cast(ast.List, args['layers']).elts
+                    for node in arg_layers:
                         if not isinstance(node, ast.Name):
                             raise TranspileError(f'Invalid arguments for {kernel_utils.step_func_swap.__name__} call', node)
-                        if node.id not in buffers:
-                            raise TranspileError(f"No buffer named '{node.id}'", node)
-                    cast(list[ast.Name], arg_buffers)
+                        if node.id not in world_schema.groups:
+                            raise TranspileError(f"No layer named '{node.id}'", node)
+                    cast(list[ast.Name], arg_layers)
+                    target_layers.update(n.id for n in arg_layers)
 
-                    target_buffers.update(n.id for n in arg_buffers)
+            swapped_layers_merged.update(target_layers)
 
-            swapped_buffers_merged.update(target_buffers)
-
-            new_node = ast.Expr(casys_ast.Cs_DoubleBufferSwaps(list(target_buffers))) # type: ignore
+            new_node = ast.Expr(casys_ast.Cs_DoubleBufferSwaps(list(target_layers))) # type: ignore
             return [new_node]            
 
         (tf:=PatternTransformer(
@@ -61,7 +62,7 @@ class MarkSwaps(TranspilerModule):
             {'swap_calls': handle_swap_calls}
         )).visit(ir_ast)
 
-        ir.step_func.metadata.set(MDK_SWAP_TARGETS, swapped_buffers_merged)
+        ir.step_func.metadata.set(MDK_SWAP_TARGETS, swapped_layers_merged)
         
         if tf.matches:
             trkr.add_snapshot(

@@ -2,22 +2,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+from casys.dsl._core.ir_metadata_specs.md_core_transpiler import MDK_SOA_LAYOUT
+from casys.dsl._core.soa_field_usage_info_helper import UnfinishedSoaFieldUsageInfo
+from casys.spec.ca_layer_spec import CaLayerSpec
 from casys.dsl._core.core_transpiler import TranspilerModule
 from casys.dsl._core.errors import TranspileError
 from casys.dsl._core.ir import Ir_CaSys
 from casys.dsl._core.debug.ast_timeline_tracking import TAG_STEP_FUNC, get_tracker, f_tag_transpiler_module
-from casys.dsl._core.ir_metadata_specs.md_kernels_base import BufferUsageInfo
+from casys.dsl._core.ir_metadata_specs.md_kernels_base import MDK_SOA_FIELD_USAGE_INFO, SoaFieldUsageInfo
 from casys.dsl._core.ir_metadata_specs.md_stepfunc_base import MDK_KCALL_BUFFER_USAGE_INFO
 
-from collections import Counter, defaultdict
+from collections import defaultdict
 
-import ast
 from casys.dsl._core import casys_ast
-from casys._ast_pattern_utils.ast_pattern_engine import PatternFinder, PatternTransformer, SingleOccurrenceFinder, Collect, Bind, NodePattern, Filter, OneOrMore
 
 @dataclass(slots=True)
 class ParallelGroup(casys_ast.Cs_ParallelGroup):
-    buffer_usage: BufferUsageInfo | None = None
+    soa_field_usage: SoaFieldUsageInfo | None = None
     original: casys_ast.Cs_ParallelGroup | None = None
 
 class OptimizeParallelGrouping(TranspilerModule):
@@ -25,8 +26,7 @@ class OptimizeParallelGrouping(TranspilerModule):
         trkr = get_tracker()
         trkr.enter_phase('Optimize parallel grouping and double buffer swaps')
 
-        buffers = ir.step_func.base.buffers
-        kcall_buffer_usage_map = ir.step_func.metadata.get(MDK_KCALL_BUFFER_USAGE_INFO)
+        soa_layout = ir.metadata.get(MDK_SOA_LAYOUT)
 
         pgroups: list[ParallelGroup] = []
 
@@ -34,32 +34,37 @@ class OptimizeParallelGrouping(TranspilerModule):
             if not isinstance(node, casys_ast.Cs_ParallelGroup): continue
             assert not (node.swaps and node.calls)
 
+            if node.calls:
+                soa_field_usage = SoaFieldUsageInfo.merge([
+                    ir.kernels[kcall.kernel_name].metadata.get(MDK_SOA_FIELD_USAGE_INFO)
+                    for kcall in node.calls
+                ])
+            else:
+                soa_field_usage = UnfinishedSoaFieldUsageInfo(ir).finalized()
+
             pgroup = ParallelGroup(
                 swaps=node.swaps, 
                 calls=node.calls, 
                 sync_r2w=[], 
                 sync_w2r=[], 
                 original=node,
-                buffer_usage=BufferUsageInfo.merge([
-                    kcall_buffer_usage_map[kcall]
-                    for kcall in node.calls
-                ])
+                soa_field_usage=soa_field_usage,
             )
 
             pgroups.append(pgroup)
 
         # Remove redundant swaps and merge non-conflicting groups
-        
+
         swap_history: defaultdict[str, list[ParallelGroup]] = defaultdict(list)
-        clean_swaps: set[str] = set() # Track which buffers haven't been accessed since being swapped
+        clean_swaps: set[str] = set() # Track which SoA fields haven't been accessed since being swapped
+        dirty: set[str] = set()
 
         for i, pgroup in enumerate(pgroups):
             pgroup = pgroups[i]
-            if pgroup.buffer_usage is None: continue
 
-            buffer_usage: BufferUsageInfo = pgroup.buffer_usage
-
-            buffer_accesses = [buffer for buffer in buffer_usage.buffers if buffer_usage.check_accesses(buffer)]
+            assert pgroup.soa_field_usage is not None
+            
+            buffer_usage: SoaFieldUsageInfo = pgroup.soa_field_usage
 
             if clean_swaps.intersection(pgroup.swaps):
                 swaps_removed: list[str] = []
@@ -71,18 +76,23 @@ class OptimizeParallelGrouping(TranspilerModule):
                     pgroups[pgroups.index(swap_history[swap].pop())].swaps.remove(swap)
                     pgroup.swaps.remove(swap)
                     clean_swaps.discard(swap)
+
+            for fld in soa_layout.fields:
+                if buffer_usage.check_writes(fld):
+                    dirty.add(fld)
             
             for swap in pgroup.swaps:
                 swap_history[swap].append(pgroup)
                 clean_swaps.add(swap)
+                dirty.discard(swap)
 
-            clean_swaps.difference_update(buffer_accesses)
+            clean_swaps.difference_update([fld for fld in soa_layout.fields if buffer_usage.check_accesses(fld)])
             clean_swaps.update(pgroup.swaps)
 
             if i > 0:
                 swaps_moved: list[str] = []
                 for swap in pgroups[i-1].swaps:
-                    if swap not in buffer_accesses:
+                    if not buffer_usage.check_accesses(swap):
                         swaps_moved.append(swap)
 
                 for swap in swaps_moved:
@@ -90,83 +100,87 @@ class OptimizeParallelGrouping(TranspilerModule):
                     pgroups[i-1].swaps.remove(swap)
                     pgroup.swaps.append(swap)
                         
-        for buffer in swap_history:
-            if buffer in clean_swaps:
-                pgroups[pgroups.index(swap_history[buffer].pop())].swaps.remove(buffer)
+        for fld in swap_history:
+            if fld in clean_swaps:
+                pgroups[pgroups.index(swap_history[fld].pop())].swaps.remove(fld)
+
+        if dirty:
+            pgroups.append(ParallelGroup(
+                swaps=list(dirty), calls=[],
+                sync_r2w = [],
+                sync_w2r = []
+            ))
+            for fld in dirty:
+                swap_history[fld].append(pgroups[-1])
 
         # Insert syncs for user swaps
 
-        handled_syncs: set[tuple[str,str]] = set()
-        buffers = ir.step_func.base.buffers
-        all_pairs: dict[str, set[tuple[str,str]]] = {
-            buffer.name: set(buffer.get_soa_pairs_multi([buffer]))
-            for buffer in buffers.values()
-        }
+        handled_syncs: set[str] = set()
 
         new_pgroups: list[ParallelGroup] = pgroups.copy()
-        new_pgroups.insert(0,ParallelGroup(
-            swaps=[], calls=[],
-            sync_r2w = [],
-            sync_w2r = []
-        ))
 
-        for buffer in buffers:
-            for pair in all_pairs[buffer]:
-                predicate: Callable[[ParallelGroup],bool] = lambda g: (
-                    ( g.buffer_usage is not None
-                    and pair in g.buffer_usage.index_lut
-                    and g.buffer_usage.check_accesses(*pair)
-                    ) or (
-                        pair[0] in g.swaps
-                        or pair in g.sync_r2w
-                        or pair in g.sync_w2r
-                    )
+        for fld in soa_layout.fields:
+
+            predicate: Callable[[ParallelGroup],bool] = lambda g: (
+                (
+                    g.soa_field_usage is not None
+                    and fld in g.soa_field_usage.index_lut
+                    and g.soa_field_usage.check_accesses(fld)
+                ) or (
+                    fld in g.swaps
+                    or fld in g.sync_r2w
+                    or fld in g.sync_w2r
                 )
-                first_use_group = next(filter(predicate, new_pgroups), None)
-                if first_use_group:
-                    first_use_idx = new_pgroups.index(first_use_group)
-                    last_use_idx = new_pgroups.index(next(filter(predicate, new_pgroups[::-1])))
-                    head_slice = new_pgroups[:first_use_idx]
-                    tail_slice = new_pgroups[last_use_idx+1:]
+            )
+            first_use_group = next(filter(predicate, new_pgroups), None)
+            if first_use_group:
+                first_use_idx = new_pgroups.index(first_use_group)
+                head_slice = new_pgroups[:first_use_idx]
 
-                    if tail_slice:
-                        tail_slice[0].sync_r2w.append(pair)
-                    elif head_slice:
-                        head_slice[-1].sync_w2r.append(pair)
+                if head_slice:
+                    head_slice[0].sync_r2w.append(fld)
+                else:
+                    new_pgroups.insert(0,ParallelGroup(
+                        swaps=[], calls=[],
+                        sync_r2w = [fld],
+                        sync_w2r = []
+                    ))
 
-            if buffer in swap_history:
-                for swap_number, swap_next in enumerate(swap_history[buffer]):
-                    swap_idx_prev = 0
-                    if swap_number != 0:
-                        swap_idx_prev = new_pgroups.index(swap_history[buffer][swap_number-1])
-                        
-                    swap_idx_next = new_pgroups.index(swap_next)
+        for fld in swap_history.copy():
+            for swap_number, swap_next in enumerate(swap_history[fld]):
+                swap_idx_prev = 0
+                if swap_number != 0:
+                    swap_idx_prev = new_pgroups.index(swap_history[fld][swap_number-1])
+                    
+                swap_idx_next = new_pgroups.index(swap_next)
 
-                    handled_syncs.clear()
-                    for pair in all_pairs[buffer]:
-                        for i in range(swap_idx_next-2,swap_idx_prev-1,-1):
-                            pgroup = new_pgroups[i]
+                handled_syncs.clear()
 
-                            buffer_usage = pgroup.buffer_usage # type: ignore
+                for i in range(swap_idx_next-1,swap_idx_prev,-1):
+                    pgroup = new_pgroups[i]
 
-                            if buffer_usage is not None and buffer_usage.check_accesses(*pair):
-                                if i == len(new_pgroups) - 1: break
+                    buffer_usage = pgroup.soa_field_usage # type: ignore
 
-                                if buffer_usage.check_read_local_only(*pair):
-                                    # If buffer is only read at kernel position a sync can safely happen after any update logic
-                                    new_pgroups[i].sync_r2w.append(pair)
-                                else:
-                                    new_pgroups[i+1].sync_r2w.append(pair)
-                                handled_syncs.add(pair)
-                                break
+                    if buffer_usage is not None and buffer_usage.check_accesses(fld):
 
-                            if (i == swap_idx_next-1 and buffer_usage is None) or i == swap_idx_prev-1:
-                                new_pgroups[i].sync_r2w.append(pair)
-                                handled_syncs.add(pair)
+                        if buffer_usage.check_read_local_only(fld):
+                            # If buffer is only read at kernel position a sync can safely happen after any update logic
+                            new_pgroups[i].sync_r2w.append(fld)
+                        else:
+                            if i == swap_idx_next - 1: break
+                            new_pgroups[i+1].sync_r2w.append(fld)
 
+                        handled_syncs.add(fld)
+                        break
+                    
+                    if i == swap_idx_prev+1:
+                        pgroup.sync_r2w.append(fld)
+                        handled_syncs.add(fld)
+
+                if fld not in handled_syncs:
                     new_pgroups.insert(swap_idx_next, ParallelGroup(
                         swaps=[], calls=[],
-                        sync_r2w = list(all_pairs[buffer].difference(handled_syncs)),
+                        sync_r2w = [fld],
                         sync_w2r = []
                     ))
 

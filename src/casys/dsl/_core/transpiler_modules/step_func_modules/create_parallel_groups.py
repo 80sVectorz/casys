@@ -16,6 +16,7 @@ class CreateParallelGroups(TranspilerModule):
         trkr.enter_phase('Creating parallel groups for simulation step function')
 
         ir_ast = ir.step_func.ir_ast
+        world_schema = ir.world_schema
 
         ptrn_split_calls = [
             OneOrMore(pattern=Collect(match_in_expr(
@@ -27,10 +28,9 @@ class CreateParallelGroups(TranspilerModule):
         def handle_split_calls(m: dict[str, Any]) -> list[ast.AST]:
             split_calls: list[ast.Expr] = m['split_calls']
             
-            target_buffers: set[str] = set()
             for expr in split_calls:
                 split_call: ast.Call = expr.value # type: ignore
-                args: dict[str, Any] = core_macros.MacroSpec.parse_and_validate(kernel_utils.step_func_split,split_call)
+                core_macros.MacroSpec.parse_and_validate(kernel_utils.step_func_split,split_call)
 
             return [split_calls[0]]
 
@@ -51,7 +51,7 @@ class CreateParallelGroups(TranspilerModule):
             Collect(match_in_expr(Collect(
                 NodePattern(
                     casys_ast.Cs_DoubleBufferSwaps, 
-                    buffers=Bind(name='swaps')
+                    layers=Bind(name='swaps')
                 ),'call')),
             'expr'),'calls')
         )
@@ -76,10 +76,11 @@ class CreateParallelGroups(TranspilerModule):
         form_pgroup_from_calls: Callable[[dict[str,Any]], list[ast.AST]] = (lambda m:[
             casys_ast.Cs_ParallelGroup(
                 swaps=[
-                        buffer
+                        field_name
                         for c in m['calls']
                         if isinstance(c['call'],casys_ast.Cs_DoubleBufferSwaps)
-                        for buffer in c['swaps']
+                        for layer in c['swaps']
+                        for field_name in world_schema.groups[layer].resolve_fields()
                     ],
                 calls=[c['call'].desc for c in m['calls'] if isinstance(c['call'],casys_ast.Cs_KernelCall)] if 'calls' in m else [],
                 sync_r2w=[],
@@ -87,35 +88,40 @@ class CreateParallelGroups(TranspilerModule):
             )
         ])
 
-        # We treat make swaps be their own parallel group to preserve user ordering.
-        # The transpiler will clean up and optimize the groupings.
 
-        (tf1:=PatternTransformer(
-            pattern=[ptrn_swaps],
-            actions={
-                'calls': form_pgroup_from_calls
-            }
-        )).visit(ir_ast)
-        
-        # Create the kernel call parallel groups based on splits.
+        transformers = (
+            # We make swaps be their own parallel group to preserve user ordering.
+            # The transpiler will clean up and optimize the groupings.
 
-        (tf2:=PatternTransformer(
-            pattern=ptrn_form_groups,
-            actions={
-                'calls': None,
-                'split_call_expr': form_pgroup_from_calls
-            }
-        )).visit(ir_ast)
+            PatternTransformer(
+                pattern=[ptrn_swaps],
+                actions={
+                    'calls': form_pgroup_from_calls
+                }
+            ),
+            
+            # Create the kernel call parallel groups based on splits.
 
-        # Ensure groupings of kernel calls without any splits are also grouped.
-        # Like tailing calls or calls that were sandwiched between double buffer swaps.
+            PatternTransformer(
+                pattern=ptrn_form_groups,
+                actions={
+                    'calls': None,
+                    'split_call_expr': form_pgroup_from_calls
+                }
+            ),
 
-        (tf3:=PatternTransformer(
-            pattern=[ptrn_k_calls],
-            actions={
-                'calls': form_pgroup_from_calls
-            }
-        )).visit(ir_ast)
+            # Ensure collections of kernel calls without any splits are also grouped.
+            # Like tailing calls or calls that were sandwiched between double buffer swaps.
+
+            PatternTransformer(
+                pattern=[ptrn_k_calls],
+                actions={
+                    'calls': form_pgroup_from_calls
+                }
+            ),
+        )
+
+        for tf in transformers: tf.visit(ir_ast)
 
         trkr.add_snapshot(
             tags=(TAG_STEP_FUNC,),

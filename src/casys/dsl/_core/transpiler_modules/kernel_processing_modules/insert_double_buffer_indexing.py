@@ -21,9 +21,8 @@ class InsertDoubleBufferIndexing(TranspilerModule):
                 pattern=NodePattern(
                 node_type=ast.Subscript,
                     value=NodePattern(
-                        node_type=casys_ast.Cs_BufferRef,
-                        b=Bind('buffer'),
-                        f=Bind('field'),
+                        node_type=casys_ast.Cs_SchemaRef,
+                        s=Bind('schema'),
                     ),
                     slice=NodePattern(
                         node_type=ast.Tuple,
@@ -39,7 +38,7 @@ class InsertDoubleBufferIndexing(TranspilerModule):
             Collect(
                 NodePattern(
                     ast.AugAssign,
-                    target=Collect(NodePattern(ast.Subscript,value=NodePattern(casys_ast.Cs_BufferRef)), 'target'),
+                    target=Collect(NodePattern(ast.Subscript,value=NodePattern(casys_ast.Cs_SchemaRef)), 'target'),
                     op=Bind('op'),
                     value=Bind('value'),
                 ),
@@ -55,6 +54,7 @@ class InsertDoubleBufferIndexing(TranspilerModule):
 
             target_copy = copy.deepcopy(target)
             target_copy.ctx = ast.Load()
+            target_copy.slice = copy.deepcopy(target.slice)
 
             new_assign = ast.Assign(
                 targets=[target],
@@ -68,25 +68,33 @@ class InsertDoubleBufferIndexing(TranspilerModule):
             slices: list[ast.expr] = m['slices']
             ctx: ast.Load | ast.Store = m['ctx']            
 
+            if isinstance(slices[0], (casys_ast.Cs_RdIdx, casys_ast.Cs_WrIdx)):
+                return [node]
+
             new_slices = [
                 casys_ast.Cs_RdIdx() if isinstance(ctx, ast.Load) else casys_ast.Cs_WrIdx(),
                 *slices
             ]
+
 
             cast(ast.Tuple,node.slice).elts = new_slices
             return [node]
         
         for name, kernel in ir.kernels.items():
 
-            (tf1:=PatternTransformer(ptrn_aug_assign, {
-                'assign':handle_aug_assign
-            })).visit(kernel.ir_ast)
+            transformers = (
+                PatternTransformer(ptrn_aug_assign, {
+                    'assign':handle_aug_assign
+                }),
+                
+                BottomUpPatternTransformer(ptrn_subscript, {
+                    'subscript':handle_subscript
+                }),
+            )
 
-            (tf2:=BottomUpPatternTransformer(ptrn_subscript, {
-                'subscript':handle_subscript
-            })).visit(kernel.ir_ast)
+            for tf in transformers: tf.visit(kernel.ir_ast)
 
-            if tf1.matches or tf2.matches:
+            if any(tf.matches for tf in transformers):
                 trkr.add_snapshot(
                     ast_node=kernel.ir_ast,
                     tags=(

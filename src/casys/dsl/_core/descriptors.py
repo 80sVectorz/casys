@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable, Iterable, Sequence
-
-from casys.dsl._core.ir_metadata_specs.md_kernels_base import MDK_BUFFER_USAGE_INFO, BufferUsageInfo
+from typing import TYPE_CHECKING, Callable, Iterable
 
 if TYPE_CHECKING:
-    from casys._cac_type import CaCellType, CactField
-    from casys.dsl._core.ir import Ir_CaSys
+    from casys.spec.cac_type import CaCellTypeSpec, CactField
 
 from dataclasses import dataclass
 from casys._utils.debug_utils import PrettyReprMixin
@@ -15,7 +12,7 @@ from casys._utils.debug_utils import PrettyReprMixin
 @dataclass(frozen=True, slots=True)
 class CactBufferDescriptor(PrettyReprMixin):
     name: str
-    cact: CaCellType
+    cact: CaCellTypeSpec
 
     @staticmethod
     def get_soa_pairs_multi(
@@ -25,63 +22,54 @@ class CactBufferDescriptor(PrettyReprMixin):
     ) -> tuple[tuple[str,str],...] | tuple[tuple[str,str,CactField],...]:
         """Get all SoA field pairs"""
         res = tuple(
-            (desc.name,fld,desc.cact._fields[fld]) if include_field_objects else (desc.name,fld)
+            (desc.name,fld,desc.cact.fields[fld]) if include_field_objects else (desc.name,fld)
             for desc in descriptors
-            for fld in desc.cact._fields
+            for fld in desc.cact.fields
             if filter_predicate(desc.name, fld)
         )
         return res # type: ignore
     
-    @property
-    def soa_pairs(self):
-        return self.get_soa_pairs_multi([self])
+    def soa_pairs(self) -> tuple[tuple[str,str],...]:
+        return self.get_soa_pairs_multi([self]) # type: ignore
     
-    def mapped(self,name: str) -> CactBufferDescriptor:
-        """
-        Get a new instance that has a different name.
-        Useful for call-site mapping between buffer instance and function argument name.
-        """
-        return CactBufferDescriptor(name, self.cact)
-    
-
 
 @dataclass(frozen=True)
 class KernelCallDescriptor(PrettyReprMixin):
     kernel_name: str
     kwargs: dict[str,str]
 
-    def instantiate_access(self, ir: Ir_CaSys) -> BufferUsageInfo:
-        """
-        Instantiate buffer usage info for bound step-scope buffer
+    # def instantiate_access(self, ir: Ir_CaSys) -> SoaFieldUsageInfo:
+    #     """
+    #     Instantiate layer usage info for bound step-scope buffer
 
-        Args:
-          ir (Ir_CaSys): The CA system IR object.
+    #     Args:
+    #       ir (Ir_CaSys): The CA system IR object.
 
-        Returns:
-          BufferUsageInfo
-        """
-        kernel = ir.kernels[self.kernel_name]
-        m = kernel.metadata
-        k_buf_usage: BufferUsageInfo = m.get(MDK_BUFFER_USAGE_INFO)
+    #     Returns:
+    #       LayerUsageInfo
+    #     """
+    #     kernel = ir.kernels[self.kernel_name]
+    #     m = kernel.metadata
+    #     k_layer_usage: SoaFieldUsageInfo = m.get(MDK_SOA_FIELD_USAGE_INFO)
 
-        index_lut = {}
-        for k,v in k_buf_usage.index_lut.items():
-            if isinstance(k,tuple):
-                buf,fld = k
-                index_lut[(self.kwargs[buf],fld)] = v
-            else:
-                index_lut[self.kwargs[k]] = v
+    #     index_lut = {}
+    #     for k,v in k_layer_usage.index_lut.items():
+    #         if isinstance(k,tuple):
+    #             layer,fld = k
+    #             index_lut[(self.kwargs[layer],fld)] = v
+    #         else:
+    #             index_lut[self.kwargs[k]] = v
 
-        buffer_usage_info = BufferUsageInfo(
-            index_lut,
-            tuple(k_buf_usage.accesses),
-            tuple(k_buf_usage.reads),
-            tuple(k_buf_usage.writes),
-            tuple(k_buf_usage.guaranteed_writes),
-            tuple(k_buf_usage.local_only_reads),
-        )
+    #     layer_usage_info = SoaFieldUsageInfo(
+    #         index_lut,
+    #         k_layer_usage.accesses,
+    #         k_layer_usage.reads,
+    #         k_layer_usage.writes,
+    #         k_layer_usage.guaranteed_writes,
+    #         k_layer_usage.local_only_reads,
+    #     )
 
-        return buffer_usage_info
+    #     return layer_usage_info
     
     def __hash__(self) -> int:
         return hash((self.kernel_name, tuple(self.kwargs)))

@@ -2,13 +2,10 @@ from typing import Sequence
 from casys.dsl._core.core_transpiler import TranspilerModule
 from casys.dsl._core.errors import TranspileError
 from casys.dsl._core.ir import Ir_CaSys
-from casys.dsl._core.debug.ast_timeline_tracking import get_tracker, f_tag_kernel, f_tag_transpiler_module
-
-from collections import Counter
 
 import ast
 from casys.dsl._core import casys_ast
-from casys._ast_pattern_utils.ast_pattern_engine import PatternFinder, SingleOccurrenceFinder, Collect, Bind, NodePattern, Filter, OneOrMore
+from casys._ast_pattern_utils.ast_pattern_engine import SingleOccurrenceFinder, Collect, NodePattern, Filter, OneOrMore
 
 class ValidateStrictKernels(TranspilerModule):
     def process(self, ir: Ir_CaSys) -> None:

@@ -137,24 +137,27 @@ def mh_k_patch_op(call: ast.Call, _) -> list[ast.AST]:
         ast_raw_sum = ast.BoolOp(binop, [raw_c for raw_c in raw_coords])
         ast_mod_sum = ast.BoolOp(binop, [mod_c for mod_c in mod_coords])
 
+    rx = int(w // 2)
+    ry = int(h // 2)
+
     node = ast.IfExp(
         test=ast.BoolOp(
             op=ast.And(),
             values=[
                 ast.Compare(
-                    left=ast.Constant(int(w//2)),
+                    left=ast.Constant(rx),
                     ops=[ast.Lt(),ast.Lt()],
                     comparators=[
                         x_ast,
-                        ast.BinOp(casys_ast.Cs_AxisSize(0),ast.Sub(), ast.Constant(int(w//2)))
+                        ast.BinOp(casys_ast.Cs_AxisSize(0),ast.Sub(), ast.Constant(rx))
                     ]
                 ),
                 ast.Compare(
-                    left=ast.Constant(int(h//2)),
+                    left=ast.Constant(ry),
                     ops=[ast.Lt(),ast.Lt()],
                     comparators=[
                         y_ast,
-                        ast.BinOp(casys_ast.Cs_AxisSize(1),ast.Sub(), ast.Constant(int(h//2)))
+                        ast.BinOp(casys_ast.Cs_AxisSize(1),ast.Sub(), ast.Constant(ry))
                     ]
                 )
             ]

@@ -5,36 +5,37 @@ from typing import TYPE_CHECKING, Any, Callable, cast, get_type_hints
 import ast
 
 if TYPE_CHECKING:
-    from casys._step_func import KernelCallDescriptor
+    from casys.spec.step_func import KernelCallDescriptor
+    from casys.spec.cac_type import CaCellTypeSpec
+
+from casys.spec.ca_layer_spec import CaLayerRef
 
 from casys.dsl._core.debug.ast_origin_tracking import build_origin_map, get_origin_map
-from .dsl._core.errors import TranspileError
-from ._utils.ast_utils import map_call_args_to_kwargs
-from .dsl._core import casys_ast
-from ._utils.debug_utils import header
+from casys.dsl._core.errors import TranspileError
+from casys._utils.ast_utils import map_call_args_to_kwargs
+from casys.dsl._core import casys_ast
 from casys.dsl import kernel_utils
 
-from ._ast_pattern_utils.ast_pattern_engine import Collect, PatternTransformer
-from ._ast_pattern_utils.ast_pattern_templates import match_func_call
-
-from .dsl._core.descriptors import CactBufferDescriptor
+from .._ast_pattern_utils.ast_pattern_engine import Collect, PatternTransformer
+from .._ast_pattern_utils.ast_pattern_templates import match_func_call
 
 @dataclass(frozen=True)
 class CaKernel:
+    name: str
     func: Callable[..., None]
     func_ast: ast.FunctionDef
-    buffers: dict[str, CactBufferDescriptor]
+    layer_args: dict[str, CaCellTypeSpec]
     req_constants: list[str]
-    calls: list[KernelCallDescriptor] = field(default_factory=list) # Populated by SimStepFunc
+    
+    # Populated by SimStepFunc
+    calls: list[KernelCallDescriptor] = field(default_factory=list)
 
     @classmethod
     def from_func(cls, func: Callable[...,None]) -> CaKernel:
-        header(f'[Creating CAKernel: {func.__name__}]')
-
         hints = get_type_hints(func, include_extras=True)
 
-        buffers = {
-            name: CactBufferDescriptor(name,hint.__cac_type__)
+        layer_args = {
+            name: hint.__cac_type__
             for name,hint in hints.items()
             if hasattr(hint, '__cac_type__')
         }
@@ -82,14 +83,15 @@ class CaKernel:
         )).visit(func_ast)
         
         return cls(
+            name=fname,
             func=func,
             func_ast=func_ast,
-            buffers=buffers,
+            layer_args=layer_args,
             req_constants=req_constants,
         )
     
     def __repr__(self) -> str:
-        return f'<CAKernel {self.func.__name__}>'
+        return f'<CaKernel {self.name}>'
 
     def __call__(self, *args: Any, **kwargs: Any) -> None:
         pass

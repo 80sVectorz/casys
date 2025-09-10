@@ -1,20 +1,27 @@
 from __future__ import annotations
-import inspect
-from casys.logging import log_debug, DefinitionException, display_error
+
+from casys.dsl._core.schema.base_components import FieldSchema, GroupSchema
+from casys.logging import DefinitionException, display_error
+
 from dataclasses import _MISSING_TYPE, Field, dataclass, fields, is_dataclass
-from typing import Literal, Protocol, get_args, cast, Any, Type
+from typing import Protocol, get_args, Any
+from casys.spec.virtual_types import VirtualType, is_virtual_type_annotation, unwrap_virtual_type
+
+from casys.spec.ca_layer_spec import CaLayerRef
+
 import numpy as np
 
 @dataclass(frozen=True)
 class CactFieldType:
-    """ Holds info about a CAC-type field's type"""
+    """Holds info about a CAC-type field's type"""
 
-    true_type: np.generic
-    dummy_type: Type[Any]
+    true_type: type[np.generic] | VirtualType
+    dummy_type: type[Any]
+    schema_type: type[FieldSchema]
 
     @classmethod
-    def from_dclass_field(cls: Type[CactFieldType], field: Field) -> CactFieldType:
-        """ Create CACTFieldType based on dataclass Field object
+    def from_dclass_field(cls: type[CactFieldType], field: Field) -> CactFieldType:
+        """Create CactFieldType based on dataclass Field object
 
         Args:
             field (Field): The dataclass Field object
@@ -27,6 +34,7 @@ class CactFieldType:
         Returns:
             CACTFieldType:
         """
+
         # Validation
         if field.type.__name__ != 'cact_field':
             raise TypeError(f'Invalid type for CACType field `{field.name}`. CACType fields must use the `cact_field` dummy type')
@@ -34,44 +42,59 @@ class CactFieldType:
         t_args = get_args(field.type)
         if len(t_args) != 2:
             raise TypeError(f'Missing arguments for `cact_field` annotation of CACType field `{field.name}`. `cact_field` requires 2 arguments')
-
         true_type, dummy_type = t_args
-        if not any(issubclass(true_type,T) for T in [np.generic,]):
-            raise TypeError(f'Invalid type for `cact_field` `T_true` argument for CACType field `{field.name}`. `T_true` must be an np.generic type')
 
-        return cls(true_type,dummy_type)
+        field_schema = FieldSchema
 
+        is_virtual = is_virtual_type_annotation(true_type)
+        if is_virtual:
+            t_true, t_schema = unwrap_virtual_type(true_type)
+
+            true_type: type[np.generic] = t_true
+            field_schema = t_schema
+        else:
+            # must be a NumPy scalar class (e.g., np.uint8)
+            if not isinstance(true_type, type) or not issubclass(true_type, np.generic):
+                raise TypeError(f'Invalid type for `cact_field` `T_true` argument for CACType field `{field.name}`. `T_true` must be an np.generic type')
+
+        return cls(true_type,dummy_type, field_schema)
+    
 @dataclass(frozen=True)
 class CactField:
     name: str
     field_type: CactFieldType
     default_value: Any | None
-    parent: CaCellType
+    parent: CaCellTypeSpec
+    schema: FieldSchema
 
     @classmethod
-    def from_dclass_field(cls: Type[CactField], field: Field, cact: CaCellType, default: Any | None = None) -> CactField:
+    def from_dclass_field(cls: Type[CactField], field: Field, cact: CaCellTypeSpec, default: Any | None = None) -> CactField:
         fld_type = CactFieldType.from_dclass_field(field)
 
         if default is not None:
             # Validate default value's type
             if not any(issubclass(default,T) for T in [fld_type.true_type,fld_type.dummy_type]):
                 raise TypeError(f"Invalid default value for field `{field.name}`. Default value must match a field's T_true or T_dummy type")
+            
+        field_schema = fld_type.schema_type(field.name, fld_type.true_type, default)
 
         return cls(
             name=field.name, 
             field_type=fld_type,
             default_value=default,
             parent=cact,
+            schema=field_schema,
         )
     
-class CaCellType[T]:
+class CaCellTypeSpec[T]:
     """
-    Holds CA Cell (CAC) Type definitions. 
+    Holds CA Cell (CAC) Type's spec. 
     Also includes dummy magic methods to appease the type checker when writing kernel function code.  
     """
 
     dclass: T
-    _fields: dict[str, CactField]
+    fields: dict[str, CactField]
+    schema: GroupSchema
 
     def __init__(self, dclass: T, cls: object) -> None:
         if not is_dataclass(dclass):
@@ -87,7 +110,7 @@ class CaCellType[T]:
         }
 
         try:
-            self._fields = {
+            self.fields = {
                 fld.name: CactField.from_dclass_field(
                     field=fld,
                     cact=self,
@@ -96,29 +119,22 @@ class CaCellType[T]:
                 for fld in dclass_fields
                 if not fld.name.startswith('_')
             }
+
+            self.schema = GroupSchema(dclass.__name__, {
+                fld.name:fld.schema for fld in self.fields.values()
+            })
+
         except DefinitionException as e:
             display_error(err=DefinitionException(
                 f'\nException while creating CACType `{dclass.__name__}`\n{e.message}' # type: ignore
             ))
             exit(1)
 
-    def __getitem__(self, idx: int | tuple[int | None, ...]) -> Any:
-        return self  # simulate access to a specific cell
-
-    def __getattr__(self, name: str) -> CactField:
-        if name in ('_fields'):
-            return super().__getattr__(self, name)
-        if name in self._fields:
-            return self._fields[name]
-        raise AttributeError(f"{name} not found in CACType")
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        if name in ("dclass", "_fields"):
-            super().__setattr__(name, value)
-        pass
-
     def __repr__(self) -> str:
-        return f'<CACType: {self.dclass.__qualname__}>'
+        return f'<CaCellType: {self.dclass.__qualname__}>'
+
+    def get_layer_ref(self, name: str) -> CaLayerRef:
+        return CaLayerRef(name, self)
     
 type t_int_like = int | np.int_ | np.int8 | np.int16 | np.uint | np.uint8 | np.uint16
     
@@ -143,4 +159,4 @@ class _FieldProto[G,T](Protocol):
     def __div__(self,other: T) -> T: ...
     def __mod__(self,other: T) -> T: ...
 
-type cact_field[T_true: np.generic, T_dummy: Any] = _FieldProto[T_true,T_dummy]
+type cact_field[T_true: np.generic | VirtualType, T_dummy: Any] = _FieldProto[T_true,T_dummy]

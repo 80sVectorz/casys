@@ -2,13 +2,12 @@ from collections import deque
 import copy
 import threading
 import time
-from queue import Queue, Empty
-from tkinter import SE
+from queue import Full, Queue, Empty
 from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
 
-from casys.core import CaSim
+from casys.core import CaSim, BuffersAccessor
 
 class SimManager:
     """
@@ -20,14 +19,18 @@ class SimManager:
 
     sim: CaSim
     timestep: float
-    history_buffer: deque[tuple[int, Sequence[int], dict[str,np.ndarray]]] # timestamp, ld_idx, buffers
+    history_buffer: deque[tuple[int, dict[str,np.ndarray]]] # timestamp, ld_idx, buffers
     dims: Sequence[int]
+
+    _buffers_accessor: BuffersAccessor
 
     def __init__(
         self,
         sim: CaSim,
         timestep: float = 0.0,
-        history_buffer_len: int = 0
+        history_buffer_len: int = 0,
+        use_update_queue: bool = False,
+        update_queue_maxsize: int = 1,
     ) -> None:
         """
         :param sim: the CASim to drive
@@ -41,9 +44,13 @@ class SimManager:
 
         self._running = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._update_queue: Queue[dict[str, list[Sequence[int]]]] = Queue()
-        self._callbacks: list[Callable[[dict[str, list[Sequence[int]]]], Any]] = []
+        self._callbacks: list[Callable[[dict[str, list[tuple[int,...]]]], Any]] = []
         self._state_lock = threading.RLock()
+
+        self._use_update_queue = use_update_queue
+        self._update_queue: Queue[dict[str, list[tuple[int,...]]]] = Queue(
+            maxsize=update_queue_maxsize if use_update_queue else 0
+        )
 
         self._fps_ema_alpha = 0.2
         self._fps_ema: float | None = None
@@ -51,7 +58,11 @@ class SimManager:
         self._last_step_ms: float | None = None
 
         # field names
-        self._fields: list[str] = [name for name in sim.buffers if name in sim.system.signature_buffers]
+        self._fields: list[str] = [
+            name for name in sim._buffers
+        ]
+        
+        self._buffers_accessor = BuffersAccessor(self.sim, {})
 
 
     def start(self) -> None:
@@ -75,8 +86,9 @@ class SimManager:
 
     def _sim_step(self):
         if self.history_buffer.maxlen:
-            self.history_buffer.append((self.sim.timestamp, copy.copy(self.sim.wr_indices), copy.deepcopy(self.sim.buffers))) # type: ignore
+            self.history_buffer.append((self.sim.timestamp, copy.deepcopy(self.sim._buffers))) # type: ignore
 
+        self._buffers_accessor.clear_cache()
         self.sim.step()
 
     def step(self) -> None:
@@ -94,7 +106,7 @@ class SimManager:
     
     def _mark_dirty(self):
         # mark entire grid dirty for each field
-        dirty_map: dict[str, list[Sequence[int]]] = {}
+        dirty_map: dict[str, list[tuple[int,...]]] = {}
         full_rect = (*[0 for _ in self.dims], *self.dims)
         for field in self._fields:
             dirty_map[field] = [full_rect]
@@ -118,23 +130,19 @@ class SimManager:
         self._mark_dirty()
 
     def get_latest_update(
-        self,
-        block: bool = False,
-        timeout: Optional[float] = None
-    ) -> Optional[dict[str, list[Sequence[int]]]]:
-        """
-        Retrieve the next update map of dirty rects.
-
-        :param block: whether to block waiting for an update
-        :param timeout: seconds to wait if blocking
-        :returns: dict of field_name -> list of (x, y, width, height), or None
-        """
+        self, 
+        block: bool = False, 
+        timeout: float | None = None
+    ) -> dict[str, list[tuple[int,...]]] | None:
+        """Retrieve next dirty-map, or None if none available."""
+        if not self._use_update_queue:
+            return None
         try:
-            return self._update_queue.get(block=block, timeout=timeout)
+            return self._update_queue.get(block, timeout)
         except Empty:
             return None
 
-    def get_current_state(self) -> dict[str, Any]:
+    def get_current_state(self) -> BuffersAccessor:
         """
         Return the current read buffers for each field.
 
@@ -142,14 +150,15 @@ class SimManager:
         """
         state: dict[str, Any] = {}
         for field in self._fields:
-            idx = self.sim.wr_indices[self.sim.idx_lut[field]] ^ 1
             buf = self.sim.buffers[field]
-            state[field] = buf[idx]
-        return state
+            state[field] = buf[0]
+        self._buffers_accessor.buffers = state
+
+        return self._buffers_accessor
 
     def subscribe(
         self,
-        callback: Callable[[dict[str, list[Sequence[int]]]], Any]
+        callback: Callable[[dict[str, list[tuple[int,...]]]], Any]
     ) -> None:
         """
         Register a function to receive each dirty-map update.
@@ -169,8 +178,9 @@ class SimManager:
                 step_ms = (time.perf_counter() - step_start) * 1000.0
 
                 # full-frame dirty each step
-                dirty_map = {field: [(*[0 for _ in self.dims], *self.dims)] for field in self._fields}
-                self._publish_update(dirty_map)
+                if self._callbacks or self._use_update_queue:
+                    dirty_map = {field: [(*[0 for _ in self.dims], *self.dims)] for field in self._fields}
+                    self._publish_update(dirty_map)
 
                 # honor timestep
                 if self.timestep > 0:
@@ -186,17 +196,21 @@ class SimManager:
 
     def _publish_update(
         self,
-        dirty_map: dict[str, list[Sequence[int]]]
+        dirty_map: dict[str, list[tuple[int,...]]]
     ) -> None:
         """
         Push update into queue and notify subscribers.
         """
-        self._update_queue.put(dirty_map)
-        for cb in list(self._callbacks):
+        if self._use_update_queue:
             try:
-                cb(dirty_map)
-            except Exception:
+                self._update_queue.put_nowait(dirty_map)
+            except Full:
+                # drop the frame
                 pass
+
+        for cb in list(self._callbacks):
+            cb(dirty_map)
+
 
     def save_state(self, path: str, history_steps: int = 0) -> None:
         """Serialize current sim state and optional history to a compressed .npz."""
@@ -207,8 +221,7 @@ class SimManager:
         # Snapshot under lock
         with self._state_lock:
             t = int(self.sim.timestamp)
-            wr_indices = np.array(self.sim.wr_indices, dtype=np.int32)
-            buffers = {name: np.array(arr, copy=True) for name, arr in self.sim.buffers.items()}
+            buffers = {name: np.array(arr, copy=True) for name, arr in self.sim._buffers.items()}
 
             # History slice
             hist_list = list(self.history_buffer)
@@ -223,20 +236,18 @@ class SimManager:
             # Compose final dict of arrays for savez
             payload: dict[str, np.ndarray] = {
                 't': np.array(t, dtype=np.int64),
-                'wr_indices': wr_indices,
                 **{f'buffers/{k}': v for k, v in buffers.items()},
                 **history_meta,
             }
-            for i, (ht, hwr, hbufs) in enumerate(hist_list):
+            for i, (ht, hbufs) in enumerate(hist_list):
                 payload[f'history/{i}/t'] = np.array(int(ht), dtype=np.int64)
-                payload[f'history/{i}/wr_indices'] = np.array(hwr, dtype=np.int32)
                 for bk, bv in hbufs.items():
                     payload[f'history/{i}/buffers/{bk}'] = np.array(bv, copy=True)
 
         # Disk I/O outside the lock
         if not path.lower().endswith('.npz'):
             path = path + '.npz'
-        np.savez_compressed(path, **payload)
+        np.savez_compressed(path, **payload) # type: ignore
 
         if was_running:
             self.start()
@@ -252,9 +263,7 @@ class SimManager:
         with np.load(path, allow_pickle=False) as npz:
             # Core snapshot
             t_arr = npz['t']
-            wr_arr = npz['wr_indices']
             t = int(t_arr.item() if t_arr.shape == () else t_arr[0])
-            wr_indices = [int(x) for x in wr_arr.tolist()]
 
             # Rebuild buffers dict: pick all keys that start with 'buffers/'
             buffers: dict[str, np.ndarray] = {}
@@ -267,21 +276,20 @@ class SimManager:
             # Optional history
             history_len = int(npz['history_len']) if 'history_len' in npz.files else 0
             history_maxlen = int(npz['history_maxlen']) if 'history_maxlen' in npz.files else 0
-            history_items: list[tuple[int, list[int], dict[str, np.ndarray]]] = []
+            history_items: list[tuple[int, dict[str, np.ndarray]]] = []
             for i in range(history_len):
                 ht = int(npz[f'history/{i}/t'])
-                hwr = [int(x) for x in npz[f'history/{i}/wr_indices'].tolist()]
                 hbufs: dict[str, np.ndarray] = {}
                 hpref = f'history/{i}/buffers/'
                 for k in npz.files:
                     if k.startswith(hpref):
                         name = k[len(hpref):]
                         hbufs[name] = np.array(npz[k])
-                history_items.append((ht, hwr, hbufs))
+                history_items.append((ht, hbufs))
 
         # Apply under lock
         with self._state_lock:
-            self.sim.load_state(t, wr_indices, buffers)
+            self.sim.load_state(t, buffers)
             self.history_buffer = deque(history_items, maxlen=history_maxlen)
 
         self._mark_dirty()

@@ -1,4 +1,4 @@
-from hmac import new
+from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Sequence
 
 from collections import Counter
@@ -9,19 +9,27 @@ import time
 from casys.config import CASYS_CONFIG
 
 from casys._utils.misc_utils import namespace_canonicalize_modules
-from casys.dsl._core.debug.dynsrc import compile_and_exec
-from casys.dsl._core.ir_metadata_specs.md_stepfunc_base import MDK_DEDICATED_IDX_IDS, MDK_SIGNATURE
+from casys.dsl._core.source_management import import_from_source, get_assigned_names
 
-from casys.dsl._core.ir import Ir_CaSys
-from casys.dsl._core.descriptors import KernelCallDescriptor
+if TYPE_CHECKING:
+    from casys.dsl._core.ir import Ir_CaSys
+    from casys.dsl._core.descriptors import KernelCallDescriptor
 
 from casys.dsl._core.core_transpiler import TranspilerModule
 
 from casys.dsl._core.debug.ast_timeline_tracking import TAG_STEP_FUNC, get_tracker, f_tag_transpiler_module
 
-from casys.dsl._core.kernel_values import KV_I_SIM_STEP_INTERNAL, KV_N_SIM_STEP_REPEATS, KV_TIMESTAMP, KV_WR_IDX, f_kv_pos_ax, f_kv_wr_idx
-from casys.dsl._core.ir_metadata_specs.md_kernels_base import MDK_BUFFER_USAGE_INFO, MDK_NEEDS_DEDICATED_IDX
-from casys.dsl._core.ir_metadata_specs.md_core_transpiler import MDK_CONSTANTS, MDK_DIMS
+from casys.dsl._core.kernel_values import KV_I_SIM_STEP_INTERNAL, KV_N_SIM_STEP_REPEATS, KV_RD_IDX, KV_TIMESTAMP, KV_WR_IDX, f_kv_pos_ax, f_kv_rd_idx, f_kv_size_ax, f_kv_wr_idx
+from casys.dsl._core.ir_metadata_specs.md_stepfunc_base import (
+    MDK_NEEDS_DEDICATED_IDX as MDK_NEEDS_DEDICATED_IDX_SF,
+    MDK_SIGNATURE
+)
+from casys.dsl._core.ir_metadata_specs.md_kernels_base import (
+    MDK_SOA_FIELD_USAGE_INFO, 
+    MDK_NEEDS_DEDICATED_IDX as MDK_NEEDS_DEDICATED_IDX_KR,
+    MDK_SIGNATURE as MDK_KERNEL_SIGNATURE
+)
+from casys.dsl._core.ir_metadata_specs.md_core_transpiler import MDK_CONSTANTS, MDK_DIMS, MDK_SOA_LAYOUT
 
 import ast
 from casys.dsl._core import casys_ast
@@ -32,49 +40,30 @@ class BakeStepFuncToPython(TranspilerModule):
         trkr = get_tracker()
         trkr.enter_phase('Baking step function to final Python code')
 
-        buffers = ir.step_func.base.buffers
         dims: Sequence[int] = ir.metadata.get(MDK_DIMS)
-        dedicated_idx_ids = ir.step_func.metadata.get(MDK_DEDICATED_IDX_IDS)
 
-        def snippet_flip_idx(idx_id: str):
-            return ast.AugAssign(
-                ast.Name(idx_id,ast.Store()),
-                ast.BitXor(),
-                ast.Constant(1),
-            )
-
-        def snippet_flip_buffer_idx(buffer: str):
-            idx_id = dedicated_idx_ids.get(buffer, KV_WR_IDX)
-            return snippet_flip_idx(idx_id)
-
-        def snippet_idx(buffer: str, read=False):
-            idx_id = dedicated_idx_ids.get(buffer, KV_WR_IDX)
-            name_node = ast.Name(idx_id,ast.Load() if read else ast.Store())
+        def snippet_idx(read=False):
             if read:
-                return ast.BinOp(
-                    name_node,
-                    ast.BitXor(),
-                    ast.Constant(1),
-                )
-            return name_node
+                return ast.Constant(0)
+            return ast.Constant(1)
 
-        def snippet_buffer_subscript(buffer:str, field: str, read=False, index_read=False):
-            return ast.Subscript(ast.Name(f'{buffer}_{field}'), ctx=ast.Load() if read else ast.Store(), slice=ast.Tuple(elts=[
-                snippet_idx(buffer, index_read), *[
+        def snippet_buffer_subscript(buffer:str, read=False, index_read=False):
+            return ast.Subscript(ast.Name(buffer), ctx=ast.Load() if read else ast.Store(), slice=ast.Tuple(elts=[
+                snippet_idx(index_read), *[
                     ast.Name(f_kv_pos_ax(ax)) for ax in range(len(dims))
                 ]
             ]))
 
-        def snippet_sync_r2w(buffer,field):
+        def snippet_sync_r2w(buffer):
             return ast.Assign(
-                [snippet_buffer_subscript(buffer,field, index_read=True)],
-                snippet_buffer_subscript(buffer,field,read=True, index_read=False)
+                [snippet_buffer_subscript(buffer, index_read=True)],
+                snippet_buffer_subscript(buffer,read=True, index_read=False)
             )
 
-        def snippet_sync_w2r(buffer,field):
+        def snippet_sync_w2r(buffer):
             return ast.Assign(
-                [snippet_buffer_subscript(buffer,field, index_read=False)],
-                snippet_buffer_subscript(buffer,field,read=True, index_read=True)
+                [snippet_buffer_subscript(buffer, index_read=False)],
+                snippet_buffer_subscript(buffer,read=True, index_read=True)
             )
         
         def snippet_loop(ax: int):
@@ -98,73 +87,31 @@ class BakeStepFuncToPython(TranspilerModule):
             return top_loop
         
         def snippet_kcall(kcall: KernelCallDescriptor):
-            buffer_usage = ir.kernels[kcall.kernel_name].metadata.get(MDK_BUFFER_USAGE_INFO) 
+            kernel = ir.kernels[kcall.kernel_name]
 
-            buffer_args = [
-                f'{buf}_{fld}'
-                for k,v in kcall.kwargs.items()
-                for buf,fld in buffers[v].soa_pairs
-                if buffer_usage.check_accesses(k,fld)
-            ]
-
-            pos_args = [f_kv_pos_ax(ax) for ax in range(len(dims))]
-
-            idx_args = [
-                KV_WR_IDX,
-                *[
-                    dedicated_idx_ids[v]
-                    for k,v in kcall.kwargs.items()
-                    if buffer_usage.check_accesses(k) and v in dedicated_idx_ids
-                ]
-
+            args = [
+                k for k in kernel.metadata.get(MDK_KERNEL_SIGNATURE).keys()
             ]
 
             args = [
-                ast.Name(arg, ast.Load()) for arg in [
-                    *buffer_args,
-                    *pos_args,
-                    KV_TIMESTAMP,
-                    *idx_args,
-                ]
+                ast.Name(arg, ast.Load()) for arg in args
             ]
             
             return ast.Expr(ast.Call(ast.Name(kcall.kernel_name, ast.Load()), args)) # type: ignore
-
-        swap_counts = Counter({KV_WR_IDX:0})
-        for node in ir.step_func.ir_ast.body:
-            if not isinstance(node, casys_ast.Cs_ParallelGroup): continue
-            for swap in node.swaps:
-                swap_counts[dedicated_idx_ids[swap]] += 1
-        
-        idx_ids = [KV_WR_IDX, *dedicated_idx_ids.values()]
 
         new_body: list[ast.stmt] = []
 
         for node in ir.step_func.ir_ast.body:
             if not isinstance(node, casys_ast.Cs_ParallelGroup): continue
 
-            for swap in node.swaps:
-                new_body.append(snippet_flip_buffer_idx(swap))
-
             if node.calls or node.sync_r2w or node.sync_w2r:
                 new_body.append(snippet_parallel_loop(
                     body=[
+                        *[snippet_sync_w2r(soa_field_buffer) for soa_field_buffer in node.sync_w2r],
                         *[snippet_kcall(kcall) for kcall in node.calls],
-                        *[snippet_sync_r2w(buffer,field) for buffer,field in node.sync_r2w],
-                        *[snippet_sync_w2r(buffer,field) for buffer,field in node.sync_w2r],
+                        *[snippet_sync_r2w(soa_field_buffer) for soa_field_buffer in node.sync_r2w],
                     ]
                 ))
-
-        for idx_id in idx_ids:
-            new_body.append(snippet_flip_idx(idx_id))
-
-        new_body.append(
-            ast.Return(
-                ast.Tuple(
-                    [ast.Name(idx_id) for idx_id in idx_ids]
-                )
-            )
-        )
 
         ir.step_func.ir_ast.body = new_body
 
@@ -183,22 +130,37 @@ class BakeStepFuncToPython(TranspilerModule):
         for kernel_name, kernel in ir.kernels.items():
             nspace[kernel_name] = kernel.nb_kernel
 
-        compile_and_exec(
+        fn_name = ir.step_func.base.func.__name__
+        module = import_from_source(
             src,
-            nspace,
-            virtual_filename=f'{ir.step_func.base.func.__name__}.py',
+            virtual_filename=f'{fn_name}.py',
             mirror_kind='step',
+            cache_salt=(
+                f'par={not CASYS_CONFIG.debug_disable_cpu_parallelization};'
+                f'bc={CASYS_CONFIG.debug_jit_enable_bounds_check}'
+            ),
+            nspace=nspace,
+            dep_mode='explicit',
+            inject_into_module=False,
         )
+
+        fn = module.__dict__[fn_name]
+
+        # Inject dependencies into the function globals.
+        _defined = get_assigned_names(src)
+        deps = {k: v for k, v in nspace.items() if k not in _defined and k != fn_name}
+        fn.__globals__.update(deps)
 
         signature = ir.step_func.metadata.get(MDK_SIGNATURE)
         if CASYS_CONFIG.debug_disable_jit not in ('full', 'step_func'):
             start_time = time.perf_counter()
             nb_func = numba.jit(
-                numba.types.UniTuple(numba.from_dtype(np.uint8),len(idx_ids))(*signature.values()),
+                numba.types.void(*signature.values()),
                 nopython=CASYS_CONFIG.debug_jit_nopython, 
                 parallel=not CASYS_CONFIG.debug_disable_cpu_parallelization,
                 boundscheck = CASYS_CONFIG.debug_jit_enable_bounds_check,
-            )(nspace[ir.step_func.base.func.__name__])
+                cache=True,
+            )(fn)
             end_time = time.perf_counter()
 
             elapsed_time = end_time - start_time
@@ -212,7 +174,7 @@ class BakeStepFuncToPython(TranspilerModule):
                 milliseconds = (seconds - int(seconds)) * 1000
                 print(message, f'{int(minutes)}:{int(seconds):02}:{int(milliseconds):03}')
         else:
-            nb_func = nspace[ir.step_func.base.func.__name__]
+            nb_func = fn
 
         ir.step_func.nb_func = nb_func
 

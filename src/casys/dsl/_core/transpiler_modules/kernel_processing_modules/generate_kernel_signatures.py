@@ -1,22 +1,24 @@
 import ast
+from os import access
 from typing import TYPE_CHECKING, Sequence
 
 import numpy as np
 from numba import from_dtype
 
 from casys.dsl._core.core_transpiler import MDK_DIMS_SIGNED_NB_TYPES, TranspilerModule
-from casys.dsl._core.descriptors import CactBufferDescriptor
 from casys.dsl._core.ir import Ir_CaSys
 from casys.dsl._core.debug.ast_timeline_tracking import get_tracker, f_tag_kernel, f_tag_transpiler_module
+from casys.dsl._core.schema.schema_base import Schema
+from casys.spec.ca_layer_spec import CaLayerRef, CaLayerSpec
 
 if TYPE_CHECKING:
-    from casys.dsl._core.ir_metadata_specs.md_kernels_base import BufferUsageInfo
+    from casys.dsl._core.soa_field_usage_info_helper import SoaFieldUsageInfo
 
-from casys.dsl._core.ir_metadata_specs.md_core_transpiler import MDK_DIMS
-from casys.dsl._core.ir_metadata_specs.md_kernels_base import MDK_BUFFER_USAGE_INFO, MDK_NEEDS_DEDICATED_IDX, MDK_SIGNATURE
-from casys.dsl._core.ir_metadata_specs.md_stepfunc_base import MDK_DEDICATED_IDX_IDS
+from casys.dsl._core.ir_metadata_specs.md_core_transpiler import MDK_DIMS, MDK_DIMS_UNSIGNED_NB_TYPES, MDK_SOA_LAYOUT
+from casys.dsl._core.ir_metadata_specs.md_kernels_base import MDK_SOA_FIELD_USAGE_INFO, MDK_NEEDS_DEDICATED_IDX, MDK_SIGNATURE
+from casys.dsl._core.ir_metadata_specs.md_stepfunc_base import MDK_NEEDS_DEDICATED_IDX
 
-from casys.dsl._core.kernel_values import KV_TIMESTAMP, KV_WR_IDX, f_kv_pos_ax, f_kv_wr_idx
+from casys.dsl._core.kernel_values import KV_TIMESTAMP, f_kv_pos_ax, f_kv_size_ax
 
 class GenerateKernelSignatures(TranspilerModule):
     def process(self, ir: Ir_CaSys) -> None:
@@ -25,49 +27,38 @@ class GenerateKernelSignatures(TranspilerModule):
 
         dims: Sequence[int] = ir.metadata.get(MDK_DIMS)
         dims_signed_nb_types = ir.metadata.get(MDK_DIMS_SIGNED_NB_TYPES)
+        dims_unsigned_nb_types = ir.metadata.get(MDK_DIMS_UNSIGNED_NB_TYPES)
 
-        dedicated_idx_ids: dict[str, str] = ir.step_func.metadata.get(MDK_DEDICATED_IDX_IDS)
-        buffer_usage: BufferUsageInfo
+        step_func_needs_dedicated_idx: list[str] = ir.step_func.metadata.get(MDK_NEEDS_DEDICATED_IDX)
+        layer_usage: SoaFieldUsageInfo
+
+        soa_layout = ir.metadata.get(MDK_SOA_LAYOUT)
 
         for name, kernel in ir.kernels.items():
-            buffer_usage = kernel.metadata.get(MDK_BUFFER_USAGE_INFO)
-            needs_dedicated_idx: set[str] = set()
+            layer_usage = kernel.metadata.get(MDK_SOA_FIELD_USAGE_INFO)
 
-            for kernel_call in kernel.base.calls:
-                for k,v in kernel_call.kwargs.items():
-                    if v in dedicated_idx_ids:
-                        needs_dedicated_idx.add(k)
+            get_field_nb_type = lambda field: from_dtype(field.data_type).__getitem__(args=[slice(None),*[slice(None) for _ in dims]])
 
-            kernel.metadata.set(MDK_NEEDS_DEDICATED_IDX,needs_dedicated_idx)
-            
-            get_field_buffer_nb_type = lambda field: from_dtype(field.field_type.true_type).__getitem__(args=[slice(None),*[slice(None) for _ in dims]])
-            
             buffer_args = {
-                f'{b}_{fld}': get_field_buffer_nb_type(field)
-                for b,fld,field in CactBufferDescriptor.get_soa_pairs_multi( # type: ignore
-                    descriptors=kernel.base.buffers.values(),
-                    filter_predicate=buffer_usage.check_accesses,
-                    include_field_objects=True
-                )
+                field_name: get_field_nb_type(field)
+                for field_name, field in soa_layout.fields.items()
+                if layer_usage.check_accesses(field_name)
             }
 
             pos_args = {
                 f_kv_pos_ax(ax):nb_type
                 for ax,nb_type in zip(range(len(dims)),dims_signed_nb_types)
             }
-            idx_args = {
-                KV_WR_IDX:from_dtype(np.uint8)
-                , **{
-                    f_kv_wr_idx(b):from_dtype(np.uint8)
-                    for b in kernel.base.buffers if b in needs_dedicated_idx and buffer_usage.check_accesses(b)
-                }
+            ax_size_args = {
+                f_kv_size_ax(ax):nb_type
+                for ax,nb_type in zip(range(len(dims)),dims_unsigned_nb_types)
             }
 
             args = {
                 **buffer_args,
                 **pos_args,
+                **ax_size_args,
                 KV_TIMESTAMP: from_dtype(np.uint64),
-                **idx_args,
             }
 
             kernel.metadata.set(MDK_SIGNATURE, args)

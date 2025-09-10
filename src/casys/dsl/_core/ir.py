@@ -9,9 +9,11 @@ from casys.dsl._core import casys_ast
 from casys.dsl._core.metadata_store import MetadataStore
 
 if TYPE_CHECKING:
-    from casys._cac_type import CaCellType, CactField
-    from casys._ca_kernel import CaKernel
-    from casys._step_func import SimStepFunc
+    from casys.spec.cac_type import CaCellTypeSpec, CactField
+    from casys.spec.ca_kernel import CaKernel
+    from casys.spec.step_func import SimStepFunc
+    from casys.dsl._core.schema.soa_layout import SoaLayout
+    from casys.dsl._core.schema.world_schema import WorldSchema
 
 @dataclass(kw_only=True)
 class Ir_Base:
@@ -56,23 +58,18 @@ class Ir_SimStepFunc(Ir_Base):
 
 @dataclass
 class Ir_CaSys(Ir_Base):
+    world_schema: WorldSchema
     kernels: dict[str,Ir_CaKernel]
     step_func: Ir_SimStepFunc
-    cac_types: dict[str,CaCellType]
 
     @classmethod
     def from_step_func(cls, step_func: SimStepFunc):
-        cac_types = {}
-        for cact_desc in step_func.buffers.values():
-            if cact_desc.name not in cac_types:
-                cac_types[cact_desc.name] = cact_desc.cact
-
         ir_kernels = {}
         for name,kernel in step_func.kernels.items():
             ir_kernels[name] = Ir_CaKernel.from_ca_kernel(kernel)
 
         return cls(
+            world_schema=step_func.world_schema,
             kernels=ir_kernels,
             step_func=Ir_SimStepFunc.from_step_func(step_func),
-            cac_types=cac_types
         )

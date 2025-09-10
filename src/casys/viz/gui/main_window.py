@@ -2,6 +2,9 @@ from typing import Any, cast
 import threading
 import pathlib
 
+from PySide6 import QtWidgets
+from PySide6 import QtCore
+from PySide6 import QtGui
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -25,6 +28,10 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QAction
 
+from casys.viz.gui.overlay import OverlayWidget
+from casys.viz.tools.api import consume_preinit_tools
+from casys.viz.tools.core import ToolContext, ToolManager
+
 from .canvas_widget import CanvasWidget, ClickRequest, Layer, LayerSpec
 from .ui_model import UIModel, InfoField, Tool
 from casys.sim_manager import SimManager
@@ -32,7 +39,7 @@ from casys.sim_manager import SimManager
 def apply[T](widget: T, **kwargs) -> T:
     """
     Apply setter methods on a Qt widget using given keyword args.
-    For each key, calls widget.set<Key>(value).
+    For each key, calls widget.set[Key](value).
     """
     
     for name, value in kwargs.items():
@@ -93,33 +100,14 @@ class CollapsibleSection(QWidget):
 
         from PySide6.QtWidgets import QDialog, QTreeWidget, QTreeWidgetItem, QVBoxLayout
 
-class InspectDialog(QDialog):
-    """
-    Dialog to display buffer contents at a given cell.
-    """
-    def __init__(self, x: int, y: int, t: float, schema: list[Any], state: dict[str, Any], processors: dict[str, Any], parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle(f'Inspect (I) {x},{y} | T = {t}')
-        self.resize(300, 400)
-        tree = QTreeWidget(self)
-        tree.setHeaderLabels(['Field', 'Value'])
-        # Populate tree
-        for buffer, cact in schema:
-            parent_item = QTreeWidgetItem(tree, [buffer])
-            key_prefix = buffer
-            for field in cact.fields:
-                key = schema[0]._meta.soa.cvt(buffer, field) if False else None  # placeholder
-                # compute actual key outside
-                pass
-        # We'll populate below
-        layout = QVBoxLayout(self)
-        layout.addWidget(tree)
-
 
 class MainWindow(QMainWindow):
     """
     Main application window for Casys Visualizer.
     """
+
+    tool_mgr: ToolManager
+    overlay: OverlayWidget
 
     def __init__(
         self,
@@ -153,42 +141,34 @@ class MainWindow(QMainWindow):
         self.canvas = CanvasWidget(sim, layers, self.lock, fps, window_size)
         layout.addWidget(self.canvas.native, 4)
 
+        overlay = OverlayWidget(canvas=self.canvas, parent=self.canvas.native)
+        overlay.raise_()
+        self.overlay = overlay
+
         self._info_timer = QTimer(self)
         self._info_timer.timeout.connect(self._update_info_labels)
         self._info_timer.start(500)
+
+        ctx = ToolContext(
+            window=self,
+            canvas=self.canvas,
+            overlay=getattr(self, 'overlay', None),
+            sim_mgr=self.sim,
+            edit_bus=None,  # you said no EditBus yet
+        )
+        self.tool_mgr = ToolManager(ctx)
+        self.canvas.set_tool_manager(self.tool_mgr)
+
+        # Register any tools the user queued before starting viz
+        for plugin in consume_preinit_tools():
+            self.tool_mgr.register(plugin)
+
+        self._build_tool_bar()
 
     def _create_controls_panel(self) -> QWidget:
         """
         Build and return the left-side controls panel containing Info, Controls, Layers, and Tools sections.
         """
-        def handle_inspect_confirm(pos_press: tuple[int, int], pos_release: tuple[int, int]) -> None:
-            x, y = pos_release
-            buffers = self.sim.sim.system.step_func.buffers
-            t = self.sim.sim.timestamp
-            state = self.sim.get_current_state()
-            # Build schema and state mapping
-            dlg = QDialog(self)
-            dlg.setWindowTitle(f'Inspect (I) {x},{y} | T = {t}')
-            dlg.resize(300, 400)
-            tree = QTreeWidget(dlg)
-            tree.setHeaderLabels(['Field', 'Value'])
-            for buffer_name, buffer in buffers.items():
-                buffer_item = QTreeWidgetItem(tree, [buffer_name])
-                for field in buffer.cact._fields:
-                    key = f'{buffer_name}_{field}'
-                    val = state[key][x, y]
-                    if key in self.ui_model.inspect_processors:
-                        value_str = self.ui_model.inspect_processors[key](val)
-                    else:
-                        value_str = str(val)
-                    QTreeWidgetItem(buffer_item, [field, value_str])
-            layout = QVBoxLayout(dlg)
-            layout.addWidget(tree)
-            dlg.setModal(False)
-            dlg.show()
-
-        self.ui_model.register_tool('Inspect', handle_inspect_confirm)
-        self.ui_model.tools['Inspect'].registered = True
 
         panel = QFrame(self)
         panel.setFrameShape(QFrame.Shape.StyledPanel)
@@ -259,25 +239,26 @@ class MainWindow(QMainWindow):
         layer_section.content_layout.addWidget(scroll)
         vbox.addWidget(layer_section)
 
-        # Tools section
-        tools_section = CollapsibleSection('Tools', panel)
-        tools_section.content_layout.addWidget(QLabel('Default Tools:', tools_section))
-        for tool in self.ui_model.tools.values():
-            if tool.registered:
-                btn = QPushButton(tool.name, tools_section)
-                btn.setCheckable(True)
-                btn.clicked.connect(lambda checked, t=tool: self._activate_tool(t, checked))
-                tools_section.content_layout.addWidget(btn)
-        tools_section.content_layout.addWidget(QLabel('Custom Tools:', tools_section))
-        for tool in self.ui_model.tools.values():
-            if not tool.registered:
-                btn = QPushButton(tool.name, tools_section)
-                btn.clicked.connect(lambda checked, t=tool: self._activate_tool(t, checked))
-                tools_section.content_layout.addWidget(btn)
-        vbox.addWidget(tools_section)
-
         vbox.addStretch()
         return panel
+    
+    def _build_tool_bar(self) -> None:
+        tb = QtWidgets.QToolBar('Tools', self)
+        self.addToolBar(QtCore.Qt.ToolBarArea.TopToolBarArea, tb)
+
+        def refresh() -> None:
+            tb.clear()
+            for info in self.tool_mgr.tools():
+                act = QtGui.QAction(info.name, self)
+                act.setToolTip(info.tooltip or info.name)
+                if info.kind == 'modal':
+                    act.triggered.connect(lambda _=False, n=info.name: self.tool_mgr.activate_modal(n))
+                else:
+                    act.triggered.connect(lambda _=False, n=info.name: self.tool_mgr.use_oneshot(n))
+                tb.addAction(act)
+
+        self.tool_mgr.on_changed(refresh)
+        refresh()
     
     def _build_menus(self) -> None:
         """Create 'File' menu with Save/Load actions."""
@@ -310,7 +291,7 @@ class MainWindow(QMainWindow):
         steps, ok = QInputDialog.getInt(
             self,
             'History Length',
-            f'How many history steps to save? (0–{max_hist})',
+            f'How many history steps to save? (0-{max_hist})',
             max_hist, 0, max_hist
         )
         if ok:
@@ -338,10 +319,6 @@ class MainWindow(QMainWindow):
         finally:
             self.lock.release()
         self.canvas.update()
-
-    def _activate_tool(self, tool: Tool, checked: bool) -> None:
-        self.ui_model.tool_active = True
-        self.canvas.click_request = ClickRequest(callback=tool.callback, lock=self.lock, single_use=tool.single_use)
 
     def _update_info_labels(self) -> None:
         container = self.centralWidget()

@@ -1,5 +1,3 @@
-from typing import TYPE_CHECKING, Sequence, TypedDict
-
 from casys.dsl._core.transpiler_modules.util_modules import PipelineSection
 
 from casys.dsl._core.core_transpiler import Ir_CaSys, TranspilerModule
@@ -13,10 +11,10 @@ from casys.dsl._core.ir_metadata_specs.md_kernels_base import (
 )
 
 from casys.dsl._core.transpiler_modules.kernel_processing_modules import (
-    analyze_kernel_buffer_usage,
-    mark_buffer_refs,
     macros,
     handle_k_gets,
+    # mark_layer_field_refs,
+    insert_schema_refs,
 
     mark_pos_vars,
     insert_bounds_logic,
@@ -25,9 +23,12 @@ from casys.dsl._core.transpiler_modules.kernel_processing_modules import (
 
     validate_readonly,
 
-    generate_kernel_signatures,
+    analyze_layer_fields_usage,
+    analyze_soa_fields_usage,
+
     validate_strict_kernels,
 )
+from casys.dsl._core.transpiler_modules.schema_access_modules import resolve_schema_refs
 
 class BaseKernelsProcessor(PipelineSection):
     section_phase = 'Processing kernels'
@@ -38,7 +39,9 @@ class BaseKernelsProcessor(PipelineSection):
 
         return [
             macros.HandleMacrosRecursive(),
-            mark_buffer_refs.MarkBufferRefs(),
+            # mark_layer_field_refs.MarkLayerFieldRefs(),
+            insert_schema_refs.InsertSchemaRefs(),
+
             handle_k_gets.HandleKGets(),
             mark_pos_vars.MarkPosVars(),
             insert_bounds_logic.InsertBoundsLogic(),
@@ -46,11 +49,13 @@ class BaseKernelsProcessor(PipelineSection):
 
             validate_readonly.ValidateReadonly(),
 
-            analyze_kernel_buffer_usage.AnalyzeBufferUsage(),
+            resolve_schema_refs.ResolveSchemaRefs(),
+
+            # analyze_layer_fields_usage.AnalyzeLayerFieldsUsage(),
+            analyze_soa_fields_usage.AnalyzeSoaFieldsUsage(),
 
             validate_strict_kernels.ValidateStrictKernels()
             if ir.metadata.get(MDK_CORE_CONF)['strict_kernels'] else None,
-
         ]
 
     def process(self, ir: Ir_CaSys) -> None:

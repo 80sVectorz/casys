@@ -105,7 +105,7 @@ class WildCard(Pattern):
 class NodePattern(Pattern):
     """Match an AST node of *node_type* with constraints on its fields."""
 
-    def __init__(self, node_type: type[ast.AST], **field_patterns: "Pattern | Any"):
+    def __init__(self, node_type: type[ast.AST], **field_patterns: Pattern | Any):
         self.node_type = node_type
         self.field_patterns = field_patterns
         for pat in field_patterns.values():
@@ -177,8 +177,8 @@ class Collect(Pattern):
 
         if force:
             if self.expected_bindings:
-                # Inside a repetition wrapper – *do not* merge inner bindings;
-                # instead, append the inner-dict itself to the list under *key*.
+                # Inside a repetition wrapper, do not merge inner bindings;
+                # instead, append the inner-dict itself to the list under key.
                 if self.key in merged:
                     merged[self.key].append(inner)
                 else:
@@ -191,7 +191,7 @@ class Collect(Pattern):
                     merged[self.key] = [node]
                 return merged
 
-        # Outside repetition – store node and merge inner bindings
+        # Outside repetition - store node and merge inner bindings
         if self.key in merged:
             return None  # scalar expected, duplicate found
         merged[self.key] = node
@@ -390,16 +390,6 @@ class PatternTransformer(ast.NodeTransformer):
 
 
     # ------------- helpers to interpret collected values ------------------
-    # @staticmethod
-    # def _as_nodes(value: Any) -> list[ast.AST]:
-    #     if isinstance(value, ast.AST):
-    #         return [value]
-    #     if isinstance(value, list):
-    #         return [n for n in value if isinstance(n, ast.AST)]
-    #     if isinstance(value, dict):
-    #         n = value.get("_node")
-    #         return [n] if isinstance(n, ast.AST) else []
-    #     return []
     
     @staticmethod
     def _as_nodes(value: Any) -> list[ast.AST]:
@@ -500,107 +490,6 @@ class PatternTransformer(ast.NodeTransformer):
 
     # ---------------- plan replacements / removals for a list -------------
 
-
-    # def _plan(self, seq: list[ast.AST]) -> tuple[dict[int, list[ast.AST]], set[int]]:
-    #     """Plan replacements and removals for a sibling list.
-
-    #     Scans left-to-right for non-overlapping matches of `self.pattern` in `seq`,
-    #     records matches, and computes:
-    #     - a mapping from anchor node id -> replacement list
-    #     - a set of node ids to remove
-
-    #     Args:
-    #         seq: The list of sibling AST nodes to scan.
-
-    #     Returns:
-    #         tuple[dict[int, list[ast.AST]], set[int]]: (replacements, removals).
-    #     """
-    #     repl: dict[int, list[ast.AST]] = {}
-    #     remove: set[int] = set()
-    #     i = 0
-    #     # while i < len(seq):
-    #     #     mtch = _match_patterns(self.pattern, seq, i, {})
-    #     #     if not mtch:
-    #     #         i += 1
-    #     #         continue
-
-    #     #     bindings, new_pos = mtch[0]
-    #     #     self._record(bindings)
-    #     #     span_nodes = seq[i:new_pos]
-
-    #     #     for key, action in self.actions.items():
-    #     #         if key not in bindings:
-    #     #             continue
-
-    #     #         collected = self._as_nodes(bindings[key])
-    #     #         if not collected:
-    #     #             continue
-
-    #     #         anchor = collected[0]
-    #     #         container = anchor if anchor in span_nodes else span_nodes[0]
-
-    #     #         if action is None:
-    #     #             remove.update(id(n) for n in collected)
-    #     #         else:
-    #     #             r = action(bindings) or []
-    #     #             if not isinstance(r, list):
-    #     #                 raise TypeError('Handler must return list[ast.AST].')
-    #     #             repl[id(container)] = r
-    #     #             remove.update(id(n) for n in collected[1:])
-
-    #     #     i = new_pos
-
-    #     # return repl, remove
-    #     while i < len(seq):
-    #         mtch = _match_patterns(self.pattern, seq, i, {})
-    #         if not mtch:
-    #             i += 1
-    #             continue
-
-    #         bindings, new_pos = mtch[0]
-    #         self._record(bindings)
-    #         span_nodes = seq[i:new_pos]
-
-    #         for key, action in self.actions.items():
-    #             if key not in bindings:
-    #                 continue
-
-    #             collected = self._as_nodes(bindings[key])
-    #             if not collected:
-    #                 continue
-
-    #             anchor = collected[0]
-
-    #             if anchor in span_nodes:
-    #                 # anchor is the list element itself: replace/remove in the list
-    #                 if action is None:
-    #                     remove.update(id(n) for n in collected)
-    #                 else:
-    #                     r = action(bindings) or []
-    #                     if not isinstance(r, list):
-    #                         raise TypeError('Handler must return list[ast.AST].')
-    #                     repl[id(anchor)] = r
-    #                     remove.update(id(n) for n in collected[1:])
-    #             else:
-    #                 # anchor is nested inside the matched subtree; mutate the subtree in place
-    #                 container = span_nodes[0]
-    #                 if action is None:
-    #                     # best-effort: only possible if anchor is in a list field
-    #                     ok_any = False
-    #                     for n in collected:
-    #                         ok_any |= self._delete_within(container, n)
-    #                     if not ok_any:
-    #                         raise ValueError('Cannot delete non-list child node in-place.')
-    #                 else:
-    #                     r = action(bindings) or []
-    #                     if not isinstance(r, list):
-    #                         raise TypeError('Handler must return list[ast.AST].')
-    #                     if not self._replace_within(container, anchor, r):
-    #                         raise ValueError('Could not locate collected child in matched subtree for in-place replacement.')
-
-    #         i = new_pos
-
-    #     return repl, remove
 
     def _plan(self, seq: list[ast.AST]) -> tuple[dict[int, list[ast.AST]], set[int]]:
         repl: dict[int, list[ast.AST]] = {}
@@ -706,36 +595,6 @@ class PatternTransformer(ast.NodeTransformer):
 
         return node
 
-    # def generic_visit(self, node: ast.AST) -> ast.AST:
-    #     for field, old_value in ast.iter_fields(node):
-    #         if isinstance(old_value, list):
-    #             new_values: list[ast.AST] = []
-    #             changed = False
-    #             for value in old_value:
-    #                 if isinstance(value, ast.AST):
-    #                     visited = self.visit(value)
-    #                     rep: ReplaceResult = self._maybe_replace(visited)
-    #                     if rep is None:
-    #                         changed = True
-    #                         continue
-    #                     if isinstance(rep, list):
-    #                         new_values.extend(rep)
-    #                         changed = True
-    #                     elif isinstance(rep, ast.AST):
-    #                         new_values.append(rep)
-    #                         changed = True
-    #                 else:
-    #                     new_values.append(value)
-    #             if changed:
-    #                 setattr(node, field, new_values)
-    #         elif isinstance(old_value, ast.AST):
-    #             visited = self.visit(old_value)
-    #             rep: ReplaceResult = self._maybe_replace(visited)
-    #             if rep is not None:
-    #                 new_node = self._normalize_replace_for_nonlist(rep, field)
-    #                 setattr(node, field, new_node)
-    #     return node
-
     def _maybe_replace(self, node: ast.AST) -> ast.AST | list[ast.AST] | None:
         """
         Try to match `self.pattern` against just `node` and apply actions.
@@ -789,6 +648,81 @@ class PatternTransformer(ast.NodeTransformer):
         # If we only did in-place nested edits, keep this node (signal "no top-level replace")
         return None
 
+
+# class BottomUpPatternTransformer(PatternTransformer):
+#     """
+#     Post-order transformer that applies actions to the current node only
+#     after all of its children have been transformed.
+
+#     Key difference from PatternTransformer:
+#     - We disable the parent class's child-level _maybe_replace(...) to avoid
+#       re-matching children on the way back up. Sequence-level planning in list
+#       fields still runs as usual.
+#     """
+
+#     # --- IMPORTANT: neutralize parent child-level matching ---
+#     def _maybe_replace(self, node: ast.AST) -> ast.AST | list[ast.AST] | None:
+#         # Parent generic_visit calls this for visited children; returning None
+#         # prevents a second match on those children.
+#         return None
+
+#     def generic_visit(self, node: ast.AST) -> ast.AST:
+#         # 1) Transform children with parent's machinery (list-field sequence
+#         #     planning still works), but _maybe_replace is now neutralized.
+#         node = super().generic_visit(node)
+
+#         # 2) Bottom-up: match and act on the fully-processed *current* node.
+#         res = _match_patterns(self.pattern, [node], 0, {})
+#         if not res:
+#             return node
+
+#         bindings, _ = res[0]
+#         self._record(bindings)
+
+#         delete_self = False
+#         replace_with: ast.AST | None = None
+
+#         for key, action in self.actions.items():
+#             if key not in bindings:
+#                 continue
+
+#             collected = self._as_nodes(bindings[key])
+
+#             # Target THIS node directly
+#             if node in collected:
+#                 if action is None:
+#                     delete_self = True
+#                     continue
+#                 repl = action(bindings) or []
+#                 if not isinstance(repl, list):
+#                     raise TypeError('Handler must return list[ast.AST].')
+#                 if len(repl) == 0:
+#                     delete_self = True
+#                     continue
+#                 if len(repl) != 1:
+#                     raise ValueError('Cannot replace a non-list node with multiple nodes.')
+#                 replace_with = repl[0]
+#                 continue
+
+#             # Target nested anchors inside this node
+#             if action is None:
+#                 for n in collected:
+#                     self._delete_within(node, n)
+#             else:
+#                 repl = action(bindings) or []
+#                 if not isinstance(repl, list):
+#                     raise TypeError('Handler must return list[ast.AST].')
+#                 for n in collected:
+#                     self._replace_within(node, n, repl)
+
+#         if replace_with is not None:
+#             return replace_with
+#         if delete_self:
+#             # Effective only when parent holds this node inside a list field.
+#             return None
+
+#         return node
+
     
 class BottomUpPatternTransformer(ast.NodeTransformer):
     """
@@ -828,16 +762,6 @@ class BottomUpPatternTransformer(ast.NodeTransformer):
                     rec(it)
         rec(value)
         return out
-
-    # def _as_nodes(self, value: Any) -> list[ast.AST]:
-    #     if isinstance(value, ast.AST):
-    #         return [value]
-    #     if isinstance(value, list):
-    #         return [n for n in value if isinstance(n, ast.AST)]
-    #     if isinstance(value, dict):
-    #         n = value.get("_node")
-    #         return [n] if isinstance(n, ast.AST) else []
-    #     return []
 
     def visit(self, node: ast.AST) -> ast.AST | None:
         # First, transform children recursively (bottom-up)

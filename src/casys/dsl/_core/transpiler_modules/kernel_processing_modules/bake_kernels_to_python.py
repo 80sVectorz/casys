@@ -1,11 +1,11 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Sequence
 
-from black import trans
 import numba
+import numpy
 
 from casys.config import CASYS_CONFIG
-from casys.dsl._core.debug.dynsrc import compile_and_exec
+from casys.dsl._core.source_management import import_from_source, get_assigned_names
 
 if TYPE_CHECKING:
     from casys.dsl._core.ir import Ir_CaSys
@@ -15,13 +15,13 @@ from casys.dsl._core.core_transpiler import TranspilerModule
 
 from casys.dsl._core.debug.ast_timeline_tracking import get_tracker, f_tag_kernel, f_tag_transpiler_module
 
-from casys.dsl._core.kernel_values import KV_WR_IDX, f_kv_pos_ax, f_kv_wr_idx
-from casys.dsl._core.ir_metadata_specs.md_kernels_base import MDK_NEEDS_DEDICATED_IDX, MDK_SIGNATURE
+from casys.dsl._core.kernel_values import f_kv_pos_ax, f_kv_size_ax
+from casys.dsl._core.ir_metadata_specs.md_kernels_base import MDK_SIGNATURE
 from casys.dsl._core.ir_metadata_specs.md_core_transpiler import MDK_CONSTANTS, MDK_DIMS
 
 import ast
 from casys.dsl._core import casys_ast
-from casys._ast_pattern_utils.ast_pattern_engine import PatternTransformer, Collect, Bind, NodePattern
+from casys._ast_pattern_utils.ast_pattern_engine import Filter, PatternTransformer, Collect, Bind, NodePattern
 import time
 
 class BakeKernelsToPython(TranspilerModule):
@@ -31,18 +31,20 @@ class BakeKernelsToPython(TranspilerModule):
 
         dims: Sequence[int] = ir.metadata.get(MDK_DIMS)
         constants: dict[str, Any] = ir.metadata.get(MDK_CONSTANTS)
-        needs_dedicated_idx: set[str]
 
         ptrn_buffer_refs = [
             NodePattern(
                 ast.Subscript,
                 value=Collect(NodePattern(
-                    casys_ast.Cs_BufferRef,
-                    b=Bind('b'),
-                    f=Bind('f'),
-                ), 'buffer_ref'),
+                    casys_ast.Cs_SoaFieldRef,
+                    field=Bind('fld'),
+                ), 'soa_field_ref'),
                 slice=Collect(NodePattern(ast.Tuple),'slice')
             )
+        ]
+
+        ptrn_double_buf_idx = [
+            Filter(lambda n: isinstance(n, (casys_ast.Cs_RdIdx, casys_ast.Cs_WrIdx)), 'idx')
         ]
 
         ptrn_axis_pos = [
@@ -67,32 +69,27 @@ class BakeKernelsToPython(TranspilerModule):
         ]
 
         for name, kernel in ir.kernels.items():
-            needs_dedicated_idx = kernel.metadata.get(MDK_NEEDS_DEDICATED_IDX)
             signature = kernel.metadata.get(MDK_SIGNATURE)
 
-            (tf1:=PatternTransformer(ptrn_buffer_refs, {
-                'buffer_ref': lambda m: [ast.Name(f"{m['b']}_{m['f']}")],
-                'slice': lambda m: [ast.Tuple([
-                    (
-                        ast.Name(f_kv_wr_idx(m['b']) if m['b'] in needs_dedicated_idx else KV_WR_IDX)
-                        if isinstance(m['slice'].elts[0], casys_ast.Cs_WrIdx) else
-                        ast.BinOp(
-                            left=ast.Constant(1),
-                            op=ast.BitXor(),
-                            right=ast.Name(f_kv_wr_idx(m['b']) if m['b'] in needs_dedicated_idx else KV_WR_IDX)
-                        )
-                    ),
-                    *m['slice'].elts[1:]
-                ])],
-            })).visit(kernel.ir_ast)
-
             transformers = (
+                PatternTransformer(ptrn_buffer_refs, {
+                    'soa_field_ref': lambda m: [ast.Name(m['fld'].name)],
+                }),
+
+                PatternTransformer(ptrn_double_buf_idx, {
+                    'idx': lambda m: [
+                        ast.Constant(1)
+                        if isinstance(m['idx'], casys_ast.Cs_WrIdx) else
+                        ast.Constant(0)
+                    ],
+                }),
+
                 PatternTransformer(ptrn_axis_pos, {
                     'kpos': lambda m: [ast.Name(f_kv_pos_ax(m['ax']))],
                 }),
 
                 PatternTransformer(ptrn_axis_size, {
-                    'axis_size': lambda m: [ast.Constant(dims[m['ax']])],
+                    'axis_size': lambda m: [ast.Name(f_kv_size_ax(m['ax']))],
                 }),
 
                 PatternTransformer(ptrn_constants, {
@@ -111,15 +108,26 @@ class BakeKernelsToPython(TranspilerModule):
             src = ast.unparse(kernel.ir_ast)
 
             nspace = kernel.base.func.__globals__
+            nspace['numpy'] = numpy
             nspace['numba'] = numba
             namespace_canonicalize_modules(nspace)
 
-            compile_and_exec(
+            module = import_from_source(
                 src,
-                nspace,
                 virtual_filename=f'{name}__baked.py',
                 mirror_kind='kernel',
+                cache_salt=f'inline={CASYS_CONFIG.debug_jit_inline_kernels}',
+                nspace=nspace,
+                dep_mode='scan',
+                inject_into_module=False,
             )
+
+            fn = module.__dict__[name]
+
+            # Inject dependencies into the function globals.
+            _defined = get_assigned_names(src)
+            deps = {k: v for k, v in nspace.items() if k not in _defined and k != name}
+            fn.__globals__.update(deps)
 
             if CASYS_CONFIG.debug_disable_jit != 'full':
                 start_time = time.perf_counter()
@@ -129,7 +137,8 @@ class BakeKernelsToPython(TranspilerModule):
                     inline='always' if CASYS_CONFIG.debug_jit_inline_kernels else 'never',
                     boundscheck=CASYS_CONFIG.debug_jit_enable_bounds_check,
                     parallel=False,
-                )(nspace[name])
+                    cache=True,
+                )(fn)
                 end_time = time.perf_counter()
 
                 message = f"Kernel '{name}' Numba compilation completed in"
@@ -143,7 +152,7 @@ class BakeKernelsToPython(TranspilerModule):
                     milliseconds = (seconds - int(seconds)) * 1000
                     print(message, f'{int(minutes)}:{int(seconds):02}:{int(milliseconds):03}')
             else:
-                nb_func = nspace[name]
+                nb_func = fn
             
 
             kernel.nb_kernel = nb_func

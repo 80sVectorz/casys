@@ -2,10 +2,12 @@ from __future__ import annotations
 import time
 from typing import Sequence, Type, TYPE_CHECKING, TypedDict
 
-from casys.dsl._core.ir_metadata_specs.md_stepfunc_base import MDK_DEDICATED_IDX_IDS, MDK_SIGNATURE, MDK_SIGNATURE_BUFFERS
+from casys.dsl._core.ir_metadata_specs.md_core_transpiler import MDK_SOA_LAYOUT
+from casys.dsl._core.ir_metadata_specs.md_stepfunc_base import MDK_NEEDS_DEDICATED_IDX, MDK_SIGNATURE, MDK_SIGNATURE_BUFFERS
+from casys.dsl._core.kernel_values import f_kv_wr_idx
 
 if TYPE_CHECKING:
-    from casys._step_func import SimStepFunc
+    from casys.spec.step_func import SimStepFunc
     from casys.wrappers import CaSimConstants
 
 from casys.dsl._core.ca_system import CaSystem
@@ -64,11 +66,12 @@ class BaseTranspiler(Transpiler):
                     log_warning('Saving AST timeline failed')
                     
         sys = CaSystem(
+            soa_layout=self.ir_obj.metadata.get(MDK_SOA_LAYOUT),
+            world_schema=self.ir_obj.world_schema,
             step_func=self.ir_obj.step_func.base,
             sim_constants=self.sim_constants,
             nb_step_func=ir.step_func.nb_func, # type: ignore
             signature_buffers=ir.step_func.metadata.get(MDK_SIGNATURE_BUFFERS),
-            dedicated_idx_ids=ir.step_func.metadata.get(MDK_DEDICATED_IDX_IDS)
         )
 
         return sys
