@@ -47,7 +47,7 @@ class InsertBoundsLogic(TranspilerModule):
         def snippet_int_cast(e: ast.expr) -> ast.expr:
             if isinstance(e, ast.Name) and e.id in aliases:
                 return e  # Ensure that local only read validation checks don't get false flagged by int cast
-            return ast.Call(func=ast.Attribute(value=ast.Name(id='numpy'), attr='uint'), args=[e], keywords=[])
+            return ast.Call(func=ast.Name(id='int'), args=[e], keywords=[])
 
         def snippet_wrap_logic(value: ast.expr, ax: int) -> ast.expr:
             return snippet_int_cast(ast.BinOp(value,ast.Mod(),casys_ast.Cs_AxisSize(ax)))

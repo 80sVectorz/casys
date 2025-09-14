@@ -7,7 +7,9 @@ from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
 
-from casys.core import CaSim, BuffersAccessor
+from casys.core import CaSim
+from casys.buffer_access_handling import BuffersAccessor
+from casys.dsl._core.schema.base_components import FieldSchema
 
 class SimManager:
     """
@@ -142,18 +144,40 @@ class SimManager:
         except Empty:
             return None
 
-    def get_current_state(self) -> BuffersAccessor:
-        """
-        Return the current read buffers for each field.
 
-        :returns: mapping of field_name to 2D NumPy array
+    def get_current_state(self, fields: list[str | object] | None = None) -> BuffersAccessor:
         """
+        Return a BuffersAccessor backed by a mapping that includes only the SoA
+        arrays required to compute the requested fields.
+        """
+        wanted = fields if fields is not None else self._fields
+
+        # 1) CUDA: copy only the needed SoA fields
+        try:
+            self.sim.ensure_host_synced_for(wanted)
+        except AttributeError:
+            # CPU path or older build
+            try:
+                self.sim.ensure_host_synced()
+            except AttributeError:
+                pass
+
+        # 2) Build a mapping with only the required SoA buffers
         state: dict[str, Any] = {}
-        for field in self._fields:
-            buf = self.sim.buffers[field]
-            state[field] = buf[0]
-        self._buffers_accessor.buffers = state
+        needed_soa: set[str] = set()
+        for f in wanted:
+            if isinstance(f, str):
+                if f in self.sim._buffers:
+                    needed_soa.add(f)
+                else:
+                    needed_soa.add(self.sim.field_schemas_lut[f].resolve_field().name)
+            elif isinstance(f, FieldSchema):
+                needed_soa.add(f.resolve_field().name)
 
+        for soa_name in needed_soa:
+            state[soa_name] = self.sim._buffers[soa_name][0]
+
+        self._buffers_accessor.buffers.update(state)
         return self._buffers_accessor
 
     def subscribe(
@@ -185,7 +209,7 @@ class SimManager:
                 # honor timestep
                 if self.timestep > 0:
                     elapsed = time.perf_counter() - loop_start
-                    to_sleep = self.timestep - elapsed
+                    to_sleep = max(0.0001,self.timestep) - elapsed
                     if to_sleep > 0:
                         time.sleep(to_sleep)
 
@@ -220,6 +244,12 @@ class SimManager:
 
         # Snapshot under lock
         with self._state_lock:
+            # Ensure host mirrors are current if using CUDA
+            try:
+                self.sim.ensure_host_synced()
+            except AttributeError:
+                pass
+
             t = int(self.sim.timestamp)
             buffers = {name: np.array(arr, copy=True) for name, arr in self.sim._buffers.items()}
 

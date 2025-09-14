@@ -34,6 +34,10 @@ class CasysConfig:
     :param debug_timeline_file_directory: The directory where timeline files will be saved.
     """
 
+    backend: Literal['cpu', 'cuda'] = 'cpu'
+    cuda_block: tuple[int, int, int] = (16, 16, 1)  # good default
+    cuda_fastmath: bool = False  # enable if you accept FMAs, etc.
+
     debug_disable_cpu_parallelization: bool = False
     debug_jit_nopython: bool = True
     debug_jit_inline_kernels: bool = True

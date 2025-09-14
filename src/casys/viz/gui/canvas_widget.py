@@ -1,3 +1,4 @@
+import time
 from typing import Any
 from PySide6.QtCore import QEvent, QObject
 from vispy.app import KeyEvent, MouseEvent, use_app
@@ -31,6 +32,7 @@ COMMON_GLSL = """//glsl
 uniform sampler2D u_tex;
 uniform mat3      u_cam;   // zoom and pan matrix
 uniform ivec2     u_dims;  // grid dims (width, height)
+uniform int       u_swap_axes;
 
 in  vec2  v_uv;            // normalized viewport coords [0..1]
 out vec4  FragColor;
@@ -52,7 +54,8 @@ vec2 world_uv() {
 
 // integer cell index
 ivec2 cell_index() {
-    return ivec2(floor(world_uv()));
+    ivec2 ci = ivec2(floor(world_uv()));
+    return (u_swap_axes == 1) ? ci.yx : ci;
 }
 
 // fractional UV inside the current cell
@@ -208,6 +211,7 @@ class Layer:
             self.prog[key] = val
         self.prog['u_tex'] = self.tex
         self.prog['u_dims'] = (width, height)
+        self.prog['u_swap_axes'] = 1
 
     @staticmethod
     def _resolve_shader(src: str | Callable[[], str] | None) -> str:
@@ -221,16 +225,21 @@ class Layer:
         return COMMON_GLSL + '\n' + str(src)
 
     def upload(self, data: np.ndarray) -> None:
-        self.cpu[:, :] = data.T
+        self.cpu[:, :] = data
         self.tex.set_data(self.cpu)
 
 class CanvasWidget(SceneCanvas):
-    sim: SimManager
+    sim_mgr: SimManager
     layers: list[Layer]
     lock: threading.Lock
     click_request: ClickRequest | None = None
 
     tool_mgr: ToolManager | None = None
+    sync_rate: int = 1 # Number of simulation steps between each sync
+
+    _last_sync: int = -1
+    _interact_until: float = 0.0
+    _interact_grace_s: float = 0.075
 
     def __init__(
         self,
@@ -271,7 +280,7 @@ class CanvasWidget(SceneCanvas):
         # Replace the widget’s resizeEvent
         self.native.resizeEvent = _qt_resize
 
-        self.sim = sim
+        self.sim_mgr = sim
         self.layers = layers
         self.lock = lock
 
@@ -309,7 +318,7 @@ class CanvasWidget(SceneCanvas):
 
         # checkerboard background program
         self.bg_prog = gloo.Program(VERT_QUAD, CHECKERBOARD_FRAG)
-        self.bg_prog['u_dims'] = self.sim.sim.dims
+        self.bg_prog['u_dims'] = self.sim_mgr.sim.dims
         self.bg_prog['u_checker_size'] = 100
 
         gloo.set_clear_color('black')
@@ -322,18 +331,35 @@ class CanvasWidget(SceneCanvas):
 
         self.bg_prog.bind(self.vbo)
         self.bg_prog['u_cam'] = cam
-        W, H = self.sim.sim.dims
+        W, H = self.sim_mgr.sim.dims
         self.bg_prog['u_border_radius'] = 0.005 * min(W, H) * self.zoom
         self.bg_prog['u_window_dims'] = self.size
         self.bg_prog.draw(mode='triangles')
 
-        with self.lock:
-            state = self.sim.get_current_state()
+        interacting = self.interacting()
+
+        tstamp = self.sim_mgr.sim.timestamp
+
+        sync_needed = (
+            not interacting
+            and self._last_sync != tstamp
+            and (
+                self.sim_mgr.paused
+                or tstamp - self._last_sync >= self.sync_rate
+            )
+        )
+
+        visible_fields = [layer.field for layer in self.layers if layer.visible]
+        if sync_needed:
+            self._last_sync = tstamp
+            with self.lock:
+                state = self.sim_mgr.get_current_state(visible_fields)
 
         for layer in self.layers[::-1]:
             if not layer.visible:
                 continue
-            layer.upload(state[layer.field])
+            if sync_needed:
+                layer.upload(state[layer.field])
             layer.prog['u_cam'] = cam
             layer.prog.bind(self.vbo)
             layer.prog.draw('triangles')
@@ -344,7 +370,7 @@ class CanvasWidget(SceneCanvas):
         """Return 3x3 affine matrix (scale and translate) used in shaders."""
         s = self.zoom
         tx, ty = self.pan
-        W, H = map(float, self.sim.sim.dims)
+        W, H = map(float, self.sim_mgr.sim.dims)
         y_corr = self.screen_ratio * (W / H)  # = (h/w) * (W/H)
         return np.array(
             [[s, 0, tx],
@@ -359,7 +385,7 @@ class CanvasWidget(SceneCanvas):
         uv_screen = np.array([x / w, 1.0 - (y / h)], dtype='f4')
 
         s = self.zoom
-        W, H = self.sim.sim.dims
+        W, H = self.sim_mgr.sim.dims
         y_corr = self.screen_ratio * (W / H)  # must match _compute_cam
 
         tx, ty = self.pan
@@ -371,7 +397,7 @@ class CanvasWidget(SceneCanvas):
 
     def _screen_to_grid(self, x: float, y: float) -> tuple[int, int]:
         uv = self._screen_to_uv(x, y)
-        W, H = self.sim.sim.dims
+        W, H = self.sim_mgr.sim.dims
         ix = int(np.floor(uv[0] * W)) % W
         iy = int(np.floor(uv[1] * H)) % H
         return (ix, iy)
@@ -390,7 +416,7 @@ class CanvasWidget(SceneCanvas):
         self, a: tuple[int, int], b: tuple[int, int]
     ) -> list[tuple[tuple[int, int], tuple[int, int]]]:
         """Split an a->b rectangle into 1..4 inclusive subrects on a torus grid."""
-        W, H = self.sim.sim.dims
+        W, H = self.sim_mgr.sim.dims
         xs = self._wrap_span_shortest(a[0], b[0], W)
         ys = self._wrap_span_shortest(a[1], b[1], H)
         rects: list[tuple[tuple[int, int], tuple[int, int]]] = []
@@ -429,7 +455,7 @@ class CanvasWidget(SceneCanvas):
             np.ndarray of shape (2,) as [px, py].
         """
         w, h = self.size
-        W, H = self.sim.sim.dims
+        W, H = self.sim_mgr.sim.dims
 
         s = self.zoom
         tx, ty = self.pan
@@ -489,7 +515,7 @@ class CanvasWidget(SceneCanvas):
             (px, py, period_x_px, period_y_px)
         """
         w, h = self.size
-        W, H = self.sim.sim.dims
+        W, H = self.sim_mgr.sim.dims
 
         s = self.zoom
         tx, ty = self.pan
@@ -550,7 +576,18 @@ class CanvasWidget(SceneCanvas):
         ys = y_candidates(py0, pery, h)
         return [(kx, ky) for kx in xs for ky in ys]
 
-    # --- mouse handlers --- #
+    # --- input handling & adjacent logic--- #
+
+    def interacting(self) -> bool:
+        """True if user interacted with the camera recently."""
+        return time.monotonic() < self._interact_until
+
+    def _bump_interact(self, sec: float | None = None) -> None:
+        """Extend interaction grace window."""
+        dur = self._interact_grace_s if sec is None else sec
+        t = time.monotonic() + dur
+        if t > self._interact_until:
+            self._interact_until = t
 
     def on_mouse_press(self, ev: MouseEvent):
         if ev.button == 1:
@@ -594,7 +631,7 @@ class CanvasWidget(SceneCanvas):
             if cr is not None and cr.live:
 
                 cr.lock.acquire()
-                was_playing = not self.sim.paused
+                was_playing = not self.sim_mgr.paused
                 try:
 
                     p0 = self._screen_to_grid(*tuple(self._last_pos.astype(np.int_)))
@@ -608,7 +645,7 @@ class CanvasWidget(SceneCanvas):
                 finally:
                     cr.lock.release()
 
-                if was_playing: self.sim.start()
+                if was_playing: self.sim_mgr.start()
 
                 if cr.single_use or Key('Shift') not in ev.modifiers:
                     self.click_request = None
@@ -639,6 +676,7 @@ class CanvasWidget(SceneCanvas):
         w, h = self.size
         # pan in UV‐space: drag right → pan right, drag up → pan up
         self.pan += np.array([-dx / w,  dy / h], dtype="f4") * self.zoom
+        self._bump_interact()
         self.update()
 
     def on_mouse_wheel(self, ev):
@@ -656,6 +694,7 @@ class CanvasWidget(SceneCanvas):
         # adjust pan so (uv_screen) stays fixed
         self.pan += (old_z - new_z) * uv_screen
 
+        self._bump_interact()
         self.update()
 
     def handle_resize(self, size: tuple[int,int]):
@@ -716,10 +755,10 @@ class CanvasWidget(SceneCanvas):
     def on_key_release(self, ev: KeyEvent):
         match ev.key:
             case 'Left' | 'A':
-                self.sim.rewind()
+                self.sim_mgr.rewind()
             case 'Right' | 'D':
-                self.sim.step()
+                self.sim_mgr.step()
             case ' ':
-                self.sim.start() if self.sim.paused else self.sim.pause()
+                self.sim_mgr.start() if self.sim_mgr.paused else self.sim_mgr.pause()
             case 'Escape':
                 return

@@ -119,7 +119,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__()
         apply(self, windowTitle='Casys Visualizer')
-        self.sim = sim
+        self.sim_mgr = sim
         self.layers = layers
         self.ui_model = ui_model
         self.lock = threading.Lock()
@@ -147,13 +147,13 @@ class MainWindow(QMainWindow):
 
         self._info_timer = QTimer(self)
         self._info_timer.timeout.connect(self._update_info_labels)
-        self._info_timer.start(500)
+        self._info_timer.start(1000)
 
         ctx = ToolContext(
             window=self,
             canvas=self.canvas,
             overlay=getattr(self, 'overlay', None),
-            sim_mgr=self.sim,
+            sim_mgr=self.sim_mgr,
             edit_bus=None,  # you said no EditBus yet
         )
         self.tool_mgr = ToolManager(ctx)
@@ -187,15 +187,15 @@ class MainWindow(QMainWindow):
         row = QWidget(ctrl_section)
         row_layout = QHBoxLayout(row)
         apply(row_layout, contentsMargins=(0, 0, 0, 0))
-        for name, slot in (('Start', self.sim.start), ('Pause', self.sim.pause)):
+        for name, slot in (('Start', self.sim_mgr.start), ('Pause', self.sim_mgr.pause)):
             btn = QPushButton(name, row)
             btn.clicked.connect(slot)
             row_layout.addWidget(btn)
 
         btn_step = QPushButton('Step', row)
-        btn_step.clicked.connect(lambda: (self.lock.acquire(), self.sim.step(), self.lock.release()))
+        btn_step.clicked.connect(lambda: (self.lock.acquire(), self.sim_mgr.step(), self.lock.release()))
         btn_rewind = QPushButton('Rewind', row)
-        btn_rewind.clicked.connect(lambda: (self.lock.acquire(), self.sim.rewind(), self.lock.release()))
+        btn_rewind.clicked.connect(lambda: (self.lock.acquire(), self.sim_mgr.rewind(), self.lock.release()))
         row_layout.addWidget(btn_step)
         row_layout.addWidget(btn_rewind)
 
@@ -204,13 +204,30 @@ class MainWindow(QMainWindow):
 
         ctrl_section.content_layout.addWidget(row)
 
-        lbl_slider = QLabel('Sec/Step', ctrl_section)
-        slider = QSlider(Qt.Orientation.Horizontal, ctrl_section)
-        slider.setRange(1, 1000)
-        slider.setValue(int(self.sim.timestep * 1000))
-        slider.valueChanged.connect(lambda v: setattr(self.sim, 'timestep', v / 1000.0))
-        ctrl_section.content_layout.addWidget(lbl_slider)
-        ctrl_section.content_layout.addWidget(slider)
+        lbl_sim_spd_slider = QLabel('Sec/Step', ctrl_section)
+        def handle_sim_spd_slider(v):
+            self.sim_mgr.timestep = v/1000
+            lbl_sim_spd_slider.setText(f'Sec/Step {v/1000}')
+
+        sim_spd_slider = QSlider(Qt.Orientation.Horizontal, ctrl_section)
+        sim_spd_slider.setRange(0, 1000)
+        sim_spd_slider.setValue(int(self.sim_mgr.timestep * 1000))
+        sim_spd_slider.valueChanged.connect(handle_sim_spd_slider)
+        ctrl_section.content_layout.addWidget(lbl_sim_spd_slider)
+        ctrl_section.content_layout.addWidget(sim_spd_slider)
+
+        lbl_sync_rate_slider = QLabel('Step/Sync', ctrl_section)
+        def handle_sync_rate_slider(v):
+            self.canvas.sync_rate = v
+            lbl_sync_rate_slider.setText(f'Steps/Sync {v}')
+            
+        sync_rate_slider = QSlider(Qt.Orientation.Horizontal, ctrl_section)
+        sync_rate_slider.setRange(1, 100)
+        sync_rate_slider.setValue(1)
+        sync_rate_slider.valueChanged.connect(handle_sync_rate_slider)
+        ctrl_section.content_layout.addWidget(lbl_sync_rate_slider)
+        ctrl_section.content_layout.addWidget(sync_rate_slider)
+
         vbox.addWidget(ctrl_section)
 
         # Layers section
@@ -287,7 +304,7 @@ class MainWindow(QMainWindow):
             return
 
         self._last_dir = pathlib.Path(path).parent
-        max_hist = len(self.sim.history_buffer)
+        max_hist = len(self.sim_mgr.history_buffer)
         steps, ok = QInputDialog.getInt(
             self,
             'History Length',
@@ -297,7 +314,7 @@ class MainWindow(QMainWindow):
         if ok:
             self.lock.acquire()
             try:
-                self.sim.save_state(path, steps)  # SimManager appends .npz if missing
+                self.sim_mgr.save_state(path, steps)  # SimManager appends .npz if missing
             finally:
                 self.lock.release()
 
@@ -315,7 +332,7 @@ class MainWindow(QMainWindow):
         self._last_dir = pathlib.Path(path).parent
         self.lock.acquire()
         try:
-            self.sim.load_state(path)
+            self.sim_mgr.load_state(path)
         finally:
             self.lock.release()
         self.canvas.update()

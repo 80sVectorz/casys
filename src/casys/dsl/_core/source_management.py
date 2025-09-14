@@ -181,7 +181,7 @@ def import_from_source(
     src_h = _sha1_str(source + '|' + deps_h)
 
     root = _gen_root() / mirror_kind
-    pkg_dir = root / src_h
+    pkg_dir = root / (virtual_filename.split('.')[0]+src_h)
     pkg_dir.mkdir(parents=True, exist_ok=True)
 
     init_py = pkg_dir / '__init__.py'

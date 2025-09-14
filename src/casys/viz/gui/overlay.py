@@ -75,9 +75,9 @@ class OverlayWidget(QtWidgets.QWidget):
         self.setMouseTracking(True)
         self.raise_()
 
-        self._rects: dict[int, RectItem] = {}
-        self._notes: dict[int, NoteItem] = {}
-        self._widgets: dict[int, PinnedWidgetItem] = {}
+        self._rects: list[RectItem] = []
+        self._notes: list[NoteItem] = []
+        self._widgets: list[PinnedWidgetItem] = []
         self._widget_index: dict[int, int] = {}
         self._drag_states: dict[int, _DragState] = {}
         self._resize_margin: int = 14
@@ -100,7 +100,7 @@ class OverlayWidget(QtWidgets.QWidget):
     def set_widgets_edge_policy(self, policy: Literal['clip', 'clamp']) -> None:
         """Change how pinned widgets behave at the overlay edges."""
         self._edge_policy = policy
-        for it in self._widgets.values():
+        for it in self._widgets:
             self._layout_widget(it)
         self.update()
 
@@ -120,20 +120,20 @@ class OverlayWidget(QtWidgets.QWidget):
     # --- items management ---
 
     def upsert_rect(self, item: RectItem) -> None:
-        self._rects[item.gid] = item
+        self._rects.append(item)
 
-    def remove_rect(self, gid: int) -> None:
-        self._rects.pop(gid, None)
+    def remove_rect(self, item: RectItem) -> None:
+        self._rects.remove(item)
 
     def upsert_note(self, item: NoteItem) -> None:
-        self._notes[item.gid] = item
+        self._notes.append(item)
 
-    def remove_note(self, gid: int) -> None:
-        self._notes.pop(gid, None)
+    def remove_note(self, item: NoteItem) -> None:
+        self._notes.remove(item)
 
     def upsert_widget(self, item: PinnedWidgetItem) -> None:
         """Adopt/update a pinned QWidget and manage its geometry."""
-        self._widgets[item.gid] = item
+        self._widgets.append(item)
         w = item.widget
         wid = id(w)
         self._widget_index[wid] = item.gid
@@ -162,13 +162,13 @@ class OverlayWidget(QtWidgets.QWidget):
         self._layout_widget(item)
         self.update()
 
-    def remove_widget(self, gid: int) -> None:
-        it = self._widgets.pop(gid, None)
+    def remove_widget(self, item: PinnedWidgetItem) -> None:
+        it = self._widgets.remove(item)
         if it and it.widget:
             wid = id(it.widget)
             self._widget_index.pop(wid, None)
             self._drag_states.pop(wid, None)
-            self._tile_sel.pop(gid, None)
+            self._tile_sel.pop(id(item), None)
             it.widget.removeEventFilter(self)
             it.widget.setParent(None)
             it.widget.deleteLater()
@@ -184,20 +184,22 @@ class OverlayWidget(QtWidgets.QWidget):
         # Refresh visible tiles once per frame.
         self._visible_tiles = getattr(self._canvas, 'visible_tiles', lambda: [(0, 0)])()
 
-        widgets_sorted = sorted(self._widgets.values(), key=lambda w: w.z)
+        widgets_sorted = sorted(self._widgets, key=lambda w: w.z)
         for item in widgets_sorted:
             self._layout_widget(item)
 
+        is_interacting = bool(getattr(self._canvas, 'interacting', lambda: False)())
+
         painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, not is_interacting)
 
         for item in widgets_sorted:
             self._paint_connector(painter, item)
 
-        for item in sorted(self._rects.values(), key=lambda r: r.z):
+        for item in sorted(self._rects, key=lambda r: r.z):
             self._paint_rect(painter, item)
 
-        for item in sorted(self._notes.values(), key=lambda n: n.z):
+        for item in sorted(self._notes, key=lambda n: n.z):
             self._paint_note(painter, item)
 
         painter.end()
@@ -286,7 +288,7 @@ class OverlayWidget(QtWidgets.QWidget):
         w = self.childAt(pos)
         if not w:
             return None
-        for it in self._widgets.values():
+        for it in self._widgets:
             if w is it.widget or it.widget.isAncestorOf(w):
                 return it.widget
         return None
@@ -400,7 +402,7 @@ class OverlayWidget(QtWidgets.QWidget):
         if gid is None:
             return super().eventFilter(watched, ev)
 
-        item = self._widgets.get(gid)
+        item = next(w for w in self._widgets if id(w.widget) == wid)
         if item is None:
             return super().eventFilter(watched, ev)
 

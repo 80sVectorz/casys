@@ -3,7 +3,7 @@ import copy
 from dataclasses import dataclass, field
 
 import ast
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from casys.dsl._core import casys_ast
 from casys.dsl._core.metadata_store import MetadataStore
@@ -24,6 +24,7 @@ class Ir_CaKernel(Ir_Base):
     base: CaKernel
     ir_ast: ast.FunctionDef
     nb_kernel: Callable[...,None] | None = None
+    cuda_device: Any | None = None
 
     @classmethod
     def from_ca_kernel(cls, kernel: CaKernel) -> Ir_CaKernel:
