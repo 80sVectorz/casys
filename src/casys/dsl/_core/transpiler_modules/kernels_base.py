@@ -11,9 +11,8 @@ from casys.dsl._core.ir_metadata_specs.md_kernels_base import (
 )
 
 from casys.dsl._core.transpiler_modules.kernel_processing_modules import (
-    macros,
+    handle_macros_kernels,
     handle_k_gets,
-    # mark_layer_field_refs,
     insert_schema_refs,
 
     mark_pos_vars,
@@ -23,7 +22,6 @@ from casys.dsl._core.transpiler_modules.kernel_processing_modules import (
 
     validate_readonly,
 
-    analyze_layer_fields_usage,
     analyze_soa_fields_usage,
 
     validate_strict_kernels,
@@ -38,8 +36,7 @@ class BaseKernelsProcessor(PipelineSection):
         ir = self.ir
 
         return [
-            macros.HandleMacrosRecursive(),
-            # mark_layer_field_refs.MarkLayerFieldRefs(),
+            handle_macros_kernels.HandleMacrosKernels(),
             insert_schema_refs.InsertSchemaRefs(),
 
             handle_k_gets.HandleKGets(),
@@ -51,7 +48,6 @@ class BaseKernelsProcessor(PipelineSection):
 
             resolve_schema_refs.ResolveSchemaRefs(),
 
-            # analyze_layer_fields_usage.AnalyzeLayerFieldsUsage(),
             analyze_soa_fields_usage.AnalyzeSoaFieldsUsage(),
 
             validate_strict_kernels.ValidateStrictKernels()

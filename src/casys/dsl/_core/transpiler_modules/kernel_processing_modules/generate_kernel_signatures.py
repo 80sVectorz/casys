@@ -8,8 +8,6 @@ from numba import from_dtype
 from casys.dsl._core.core_transpiler import MDK_DIMS_SIGNED_NB_TYPES, TranspilerModule
 from casys.dsl._core.ir import Ir_CaSys
 from casys.dsl._core.debug.ast_timeline_tracking import get_tracker, f_tag_kernel, f_tag_transpiler_module
-from casys.dsl._core.schema.schema_base import Schema
-from casys.spec.ca_layer_spec import CaLayerRef, CaLayerSpec
 
 if TYPE_CHECKING:
     from casys.dsl._core.soa_field_usage_info_helper import SoaFieldUsageInfo
@@ -29,7 +27,6 @@ class GenerateKernelSignatures(TranspilerModule):
         dims_signed_nb_types = ir.metadata.get(MDK_DIMS_SIGNED_NB_TYPES)
         dims_unsigned_nb_types = ir.metadata.get(MDK_DIMS_UNSIGNED_NB_TYPES)
 
-        step_func_needs_dedicated_idx: list[str] = ir.step_func.metadata.get(MDK_NEEDS_DEDICATED_IDX)
         layer_usage: SoaFieldUsageInfo
 
         soa_layout = ir.metadata.get(MDK_SOA_LAYOUT)

@@ -1,6 +1,5 @@
 import time
 from typing import Any
-from PySide6.QtCore import QEvent, QObject
 from vispy.app import KeyEvent, MouseEvent, use_app
 from vispy.util.keys import Key
 
@@ -237,13 +236,14 @@ class CanvasWidget(SceneCanvas):
     tool_mgr: ToolManager | None = None
     sync_rate: int = 1 # Number of simulation steps between each sync
 
+    _force_sync: bool = False
     _last_sync: int = -1
     _interact_until: float = 0.0
     _interact_grace_s: float = 0.075
 
     def __init__(
         self,
-        sim: SimManager,
+        sim_mgr: SimManager,
         layers: list[Layer],
         lock: threading.Lock,
         fps: float = 60.0,
@@ -280,9 +280,11 @@ class CanvasWidget(SceneCanvas):
         # Replace the widget’s resizeEvent
         self.native.resizeEvent = _qt_resize
 
-        self.sim_mgr = sim
+        self.sim_mgr = sim_mgr
         self.layers = layers
         self.lock = lock
+
+        self.sim_mgr.subscribe(self.on_dirty_rect)
 
         # camera state
         self.zoom = 1.0
@@ -341,11 +343,14 @@ class CanvasWidget(SceneCanvas):
         tstamp = self.sim_mgr.sim.timestamp
 
         sync_needed = (
-            not interacting
-            and self._last_sync != tstamp
-            and (
-                self.sim_mgr.paused
-                or tstamp - self._last_sync >= self.sync_rate
+            self._force_sync
+            or (
+                not interacting
+                and self._last_sync != tstamp
+                and (
+                    self.sim_mgr.paused
+                    or tstamp - self._last_sync >= self.sync_rate
+                )
             )
         )
 
@@ -363,6 +368,11 @@ class CanvasWidget(SceneCanvas):
             layer.prog['u_cam'] = cam
             layer.prog.bind(self.vbo)
             layer.prog.draw('triangles')
+        
+        self._force_sync = False
+
+    def on_dirty_rect(self, _):
+        self._force_sync = True
 
     # --- spatial math helpers ---
 
@@ -590,18 +600,21 @@ class CanvasWidget(SceneCanvas):
             self._interact_until = t
 
     def on_mouse_press(self, ev: MouseEvent):
-        if ev.button == 1:
-            if self.tool_mgr is not None and self._tool_active():
-                gx, gy = self._screen_to_grid(*ev.pos)
-                self.tool_mgr.route(ToolEvent(
-                    kind='down',
-                    gpos=(gx, gy),
-                    button=ev.button,
-                    modifiers=self._mods_mask(ev),
-                ))
-                ev.handled = True
+        if self.tool_mgr is not None and self._tool_active():
+            gx, gy = self._screen_to_grid(*ev.pos)
+            tool_ev = ToolEvent(
+                kind='down',
+                gpos=(gx, gy),
+                button=ev.button,
+                modifiers=self._mods_mask(ev),
+            )
+            self.tool_mgr.route(tool_ev)
+            ev.handled = True
+            
+            if tool_ev.default_prevented:
                 return
 
+        if ev.button == 1:
             self._last_pos = ev.pos
 
             cr = self.click_request
@@ -615,16 +628,19 @@ class CanvasWidget(SceneCanvas):
             self._dragging = True
 
     def on_mouse_release(self, ev: MouseEvent):
-        if ev.button == 1 and self.tool_mgr is not None and self._tool_active():
+        if self.tool_mgr is not None and self._tool_active():
             gx, gy = self._screen_to_grid(*ev.pos)
-            self.tool_mgr.route(ToolEvent(
+            tool_ev = ToolEvent(
                 kind='up',
                 gpos=(gx, gy),
                 button=ev.button,
                 modifiers=self._mods_mask(ev),
-            ))
+            )
+            self.tool_mgr.route(tool_ev)
             ev.handled = True
-            return
+
+            if tool_ev.default_prevented:
+                return
 
         if ev.button == 1:
             cr = self.click_request
@@ -633,8 +649,7 @@ class CanvasWidget(SceneCanvas):
                 cr.lock.acquire()
                 was_playing = not self.sim_mgr.paused
                 try:
-
-                    p0 = self._screen_to_grid(*tuple(self._last_pos.astype(np.int_)))
+                    p0 = self._screen_to_grid(*(self._last_pos or ev.pos))
                     p1 = self._screen_to_grid(*ev.pos)
 
                     if cr.rect_wrap:
@@ -660,9 +675,13 @@ class CanvasWidget(SceneCanvas):
     def on_mouse_move(self, ev: MouseEvent):
         if self.tool_mgr is not None and self._tool_active():
             gx, gy = self._screen_to_grid(*ev.pos)
-            self.tool_mgr.route(ToolEvent(kind='move', gpos=(gx, gy)))
+            tool_event = ToolEvent(kind='move', gpos=(gx, gy))
+            self.tool_mgr.route(tool_event)
             ev.handled = True
-            return
+
+            # Skip default behavior if prevent_default is called
+            if tool_event.default_prevented:
+                return
 
         if not self._dragging:
             return
@@ -722,10 +741,10 @@ class CanvasWidget(SceneCanvas):
         tm = self.tool_mgr
         if tm is None:
             return False
-        # Prefer public accessors if you have them:
-        active_modal = getattr(tm, 'active_modal', lambda: None)()
-        is_one = getattr(tm, 'is_oneshot_active', lambda: False)()
-        return bool(active_modal) or bool(is_one)
+
+        active_tool = tm.active_tool()
+        is_one = tm.is_oneshot_active()
+        return active_tool is not None or bool(is_one)
 
     def _mods_mask(self, ev: MouseEvent) -> int:
         m = 0
@@ -761,4 +780,10 @@ class CanvasWidget(SceneCanvas):
             case ' ':
                 self.sim_mgr.start() if self.sim_mgr.paused else self.sim_mgr.pause()
             case 'Escape':
-                return
+                if self.tool_mgr is not None and self._tool_active():
+                    self.tool_mgr.cancel()
+                    ev.handled = True
+                    return
+
+                ev.handled = True
+                return    

@@ -33,10 +33,8 @@ from .dsl._core.transpilers import BaseTranspiler
 class CaSim:
     """
     Handles CA simulation and buffer management, including user-supplied constants.
-
-    :param system: CASystem containing the compiled step function and metadata.
-    :param dims: Tuple[int, ...] of the simulation grid dimensions.
     """
+
     system: CaSystem
     dims: Sequence[int]
     consts: object
@@ -150,7 +148,7 @@ class CaSim:
         self._buffers_accessor.buffers = self._buffers
         self.buffers.clear_cache()
 
-    def ensure_host_synced_for(self, fields: list[str | object]) -> None:
+    def ensure_host_synced_for(self, fields: Sequence[str | object]) -> None:
         """Copy only the requested SoA fields (both buffers) device->host when on CUDA."""
         if self._dev_buffers is None:
             return

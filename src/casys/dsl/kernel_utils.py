@@ -1,10 +1,8 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Literal, Sequence, cast
 
-
-
 if TYPE_CHECKING:
-    from casys.spec.cac_type import cact_field, t_int_like
+    from casys.spec.cac_type import cact_field
     from casys.wrappers import CaCellTypeSpec
 
 import numpy as np
@@ -139,16 +137,22 @@ def k_patch_op(
     """Performs an operation on a patch of the buffer.
     Acts as snippet generating dummy function, requires static parameters
 
-    :param op: The operation to perform, one of 'sum', 'mean', 'product', etc
-    :param buffer: The buffer to perform the operation on
-    :param x: The x position of the patch center
-    :param y: The y position of the patch center
-    :param width: The width of the patch
-    :param height: The height of the patch
-    :param weights: Optional weights to apply to the patch, defaults to 1 for all Moore-neighbors
-    :return: The result of the patch operation
+    **Note**:
+        Center value is not included in auto generated weight matrix
+
+    Args:
+        op: The operation to perform, one of 'sum', 'mean', 'product', etc
+        buffer: The buffer to perform the operation on
+        x: The x position of the patch center
+        y: The y position of the patch center
+        width: The width of the patch
+        height: The height of the patch
+        weights: Optional weights to apply to the patch, defaults to 1 for all Moore-neighbors.
+
+    Returns:
+        The result of the patch operation
     """
-    return np.sum(buffer[x:x+width, y:y+height])  # dummy result
+    return 0 # dummy result
 
 
 @MacroSpec(required=('expr','x','y'), optional=('d',))
@@ -179,3 +183,24 @@ def k_neighbor_mask(
     :param d: Use walrus operator to create placeholder that will be treated as the current Moore neighbor direction
     """
     return expr[np.uint8(0+x+y)]
+
+@MacroSpec(required=('snippet_call',))
+def k_snippet[T](snippet_call: T) -> T:
+    """
+    Allows for the insertion of user defined snippets.
+    The `snippet_call` argument should be a call expression.
+    It will automatically insert the body of the function you called.
+    Any arguments you pass will be treated as find & replace targets.
+    They'll be copied directly instead of being evaluated as python code.
+
+    Example input:
+        >>> def snippet(x,y):
+            x * y
+        # Somewhere in a @ca_kernel function:
+        y = k_snippet(snippet((1+2),2))
+
+    Resulting code:
+        >>> y = (1+2) * 2
+
+    """
+    return snippet_call

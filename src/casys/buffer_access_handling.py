@@ -127,7 +127,7 @@ class GpuIoManager:
       mark_after_swap_event() each step to overlap probe I/O with compute.
     """
 
-    def __init__(self, sim: Any, initial_capacity: int = 64, use_default_stream: bool = True) -> None:
+    def __init__(self, sim: CaSim, initial_capacity: int = 64, use_default_stream: bool = True) -> None:
         self.sim = sim
         self.W, self.H = sim.dims
         self._caches: dict[tuple[str, Any], _PointCache] = {}
@@ -160,11 +160,12 @@ class GpuIoManager:
     # --------------------------------- helpers ----------------------------------
 
     def _resolve_soa_and_bit(self, field: str | Any) -> tuple[str, int | None, Any]:
-        fs = field
         if isinstance(field, str):
             if field in self.sim._buffers:
                 return field, None, self.sim._buffers[field].dtype
             fs = self.sim.field_schemas_lut[field]
+        else:
+            fs = field
         base = fs.resolve_field()
         bit_idx = getattr(fs, 'bit_idx', None)
         dtype = self.sim._buffers[base.name].dtype

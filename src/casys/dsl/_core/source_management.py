@@ -205,9 +205,9 @@ def import_from_source(
 
     fqname = f'casys_gen.{mirror_kind}.{src_h}.{virtual_filename[:-3]}'
     spec = importlib.util.spec_from_file_location(fqname, mod_path)
+    assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     sys.modules[fqname] = module
-    assert spec and spec.loader
     spec.loader.exec_module(module)
 
     if inject_into_module and nspace:

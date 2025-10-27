@@ -1,12 +1,12 @@
 import logging
-from typing import cast
+import numba
 from rich.logging import RichHandler
 from rich.console import Console
 from rich.syntax import Syntax
 from rich.traceback import install
 
 # Install rich traceback handler for pretty tracebacks
-install(show_locals=True)
+install(show_locals=True, suppress=[numba])
 
 console = Console()
 

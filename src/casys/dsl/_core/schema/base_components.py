@@ -16,7 +16,7 @@ class FieldSchema(Schema):
     """
     A single field.
 
-    arguments:
+    Args:
         name (str): The field name
         data_type (Type[np.generic]): The true numpy datatype
         default_value: A optional default value

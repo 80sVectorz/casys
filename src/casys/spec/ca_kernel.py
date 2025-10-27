@@ -8,8 +8,6 @@ if TYPE_CHECKING:
     from casys.spec.step_func import KernelCallDescriptor
     from casys.spec.cac_type import CaCellTypeSpec
 
-from casys.spec.ca_layer_spec import CaLayerRef
-
 from casys.dsl._core.debug.ast_origin_tracking import build_origin_map, get_origin_map
 from casys.dsl._core.errors import TranspileError
 from casys._utils.ast_utils import map_call_args_to_kwargs

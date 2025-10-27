@@ -4,13 +4,10 @@ from typing import Callable
 
 from casys.dsl._core.ir_metadata_specs.md_core_transpiler import MDK_SOA_LAYOUT
 from casys.dsl._core.soa_field_usage_info_helper import UnfinishedSoaFieldUsageInfo
-from casys.spec.ca_layer_spec import CaLayerSpec
 from casys.dsl._core.core_transpiler import TranspilerModule
-from casys.dsl._core.errors import TranspileError
 from casys.dsl._core.ir import Ir_CaSys
 from casys.dsl._core.debug.ast_timeline_tracking import TAG_STEP_FUNC, get_tracker, f_tag_transpiler_module
 from casys.dsl._core.ir_metadata_specs.md_kernels_base import MDK_SOA_FIELD_USAGE_INFO, SoaFieldUsageInfo
-from casys.dsl._core.ir_metadata_specs.md_stepfunc_base import MDK_KCALL_BUFFER_USAGE_INFO
 
 from collections import defaultdict
 

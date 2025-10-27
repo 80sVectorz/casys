@@ -6,14 +6,10 @@ from PySide6 import QtWidgets
 from PySide6 import QtCore
 from PySide6 import QtGui
 from PySide6.QtWidgets import (
-    QApplication,
-    QDialog,
     QFileDialog,
     QFrame,
     QInputDialog,
     QMainWindow,
-    QTreeWidget,
-    QTreeWidgetItem,
     QWidget,
     QHBoxLayout,
     QVBoxLayout,
@@ -32,8 +28,8 @@ from casys.viz.gui.overlay import OverlayWidget
 from casys.viz.tools.api import consume_preinit_tools
 from casys.viz.tools.core import ToolContext, ToolManager
 
-from .canvas_widget import CanvasWidget, ClickRequest, Layer, LayerSpec
-from .ui_model import UIModel, InfoField, Tool
+from .canvas_widget import CanvasWidget, Layer
+from .ui_model import UIModel
 from casys.sim_manager import SimManager
 
 def apply[T](widget: T, **kwargs) -> T:
@@ -152,9 +148,8 @@ class MainWindow(QMainWindow):
         ctx = ToolContext(
             window=self,
             canvas=self.canvas,
-            overlay=getattr(self, 'overlay', None),
+            overlay=self.overlay,
             sim_mgr=self.sim_mgr,
-            edit_bus=None,  # you said no EditBus yet
         )
         self.tool_mgr = ToolManager(ctx)
         self.canvas.set_tool_manager(self.tool_mgr)

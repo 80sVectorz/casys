@@ -33,10 +33,10 @@ class MarkPosVars(TranspilerModule):
                     ),
                 ), key='assign',
             ),
-            Collect(match_in_expr(Collect(match_func_call(
+            Collect(match_func_call(
                 k_mark_pos
             ),
-            key='mark_pos'),), 'expr')
+            key='mark_pos')
         ]
 
         ptrn_assure_bounds = [
@@ -44,11 +44,10 @@ class MarkPosVars(TranspilerModule):
                 lambda n: isinstance(n, (ast.Assign, ast.AugAssign, ast.NamedExpr))
                 ,key='assign',
             ),
-            Collect(
-            match_in_expr(Collect(match_func_call(
+            Collect(match_func_call(
                 k_assure_bounds
             ),
-            key='assure_bounds'),), 'expr')
+            key='assure_bounds')
         ]
 
         pos_vars: dict[str,int]
@@ -84,12 +83,11 @@ class MarkPosVars(TranspilerModule):
             transformers = (
                 PatternTransformer(ptrn_mark_pos, {
                     'assign':handle_mark_pos,
-                    'expr':  None
+                    'mark_pos':  None
                 }),
                 PatternTransformer(ptrn_assure_bounds, {
                     'assign':handle_assure_bounds,
                     'assure_bounds':  None,
-                    'expr':  None
                 })
             )
             for tf in transformers: tf.visit(kernel.ir_ast)

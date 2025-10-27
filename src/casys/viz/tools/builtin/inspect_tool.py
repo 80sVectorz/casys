@@ -1,5 +1,4 @@
 from PySide6.QtWidgets import QDialog, QTreeWidget, QTreeWidgetItem, QVBoxLayout
-from numba.cuda.types import grid_group
 from casys.viz.tools.core import ToolPlugin, ToolEvent, ToolContext
 
 class InspectTool(ToolPlugin):

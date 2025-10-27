@@ -7,8 +7,6 @@ from typing import Any, Callable
 from casys.dsl._core.core_transpiler import Ir_CaSys
 from casys.dsl._core.errors import TranspileError
 
-from libcst.matchers import Call
-
 from casys._utils.ast_utils import map_call_args_to_kwargs
 
 import ast

@@ -1,11 +1,12 @@
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Literal
 
 if TYPE_CHECKING:
     from casys.viz.gui.main_window import MainWindow
     from casys.sim_manager import SimManager
     from casys.viz.gui.overlay import OverlayWidget
+    from casys.viz.gui.canvas_widget import CanvasWidget
 
 type tool_kind = Literal['modal', 'oneshot']
 
@@ -24,6 +25,17 @@ class ToolEvent:
     button: int = 0
     key: int = 0
 
+    _default_prevented: bool = False  # Internal flag to track default behavior prevention
+
+    def prevent_default(self) -> None:
+        """Mark this event as having its default action prevented."""
+        self._default_prevented = True
+
+    @property
+    def default_prevented(self) -> bool:
+        """Check if the default action has been prevented."""
+        return self._default_prevented
+
 @dataclass
 class ToolInfo:
     """Public info for UI to render buttons/menus."""
@@ -36,21 +48,26 @@ class ToolInfo:
     icon_id: str = ''
 
 class ToolContext:
-    """Stable services available to tools."""
+    """Stable services,  available to tools."""
+
+    window: MainWindow
+    canvas: CanvasWidget
+    overlay: OverlayWidget
+    sim_mgr: SimManager
+    tool_mgr: ToolManager
+
     def __init__(
         self, *, 
-        window: MainWindow, 
-        canvas: object, 
-        overlay: OverlayWidget | None,
-        sim_mgr: SimManager, 
-        edit_bus: object
+        window: MainWindow,
+        canvas: CanvasWidget,
+        overlay: OverlayWidget,
+        sim_mgr: SimManager,
     ) -> None:
         self.window = window
         self.canvas = canvas
         self.overlay = overlay
         self.sim_mgr = sim_mgr
-        self.edit_bus = edit_bus
-
+    
 class ToolPlugin:
     """Implement a tool by subclassing."""
     name: str = 'Unnamed'
@@ -62,11 +79,12 @@ class ToolPlugin:
     def on_activate(self, ctx: ToolContext) -> None: ...
     def on_deactivate(self) -> None: ...
     def on_event(self, ev: ToolEvent, ctx: ToolContext) -> None: ...
-    def on_cancel(self) -> None: ...
+    def on_cancel(self, ctx: ToolContext) -> None: ...
 
 class ToolManager:
     """Single source of truth for tools and routing."""
     def __init__(self, ctx: ToolContext) -> None:
+        ctx.tool_mgr = self
         self._ctx = ctx
         self._tools: dict[str, ToolPlugin] = {}
         self._infos: dict[str, ToolInfo] = {}
@@ -150,19 +168,10 @@ class ToolManager:
                     self.activate_modal(self._return_to_modal)
                     self._return_to_modal = None
 
-        # if target.kind == 'oneshot' and ev.kind == 'up':
-        #     target.on_deactivate()
-        #     self._active_oneshot = None
-        #     if self._return_to_modal:
-        #         self.activate_modal(self._return_to_modal)
-        #         self._return_to_modal = None
-
     def cancel(self) -> None:
-        # if self._active_modal and self._active_modal in self._tools:
-        #     self._tools[self._active_modal].on_cancel()
         if self._active_oneshot and self._active_oneshot in self._tools:
             t = self._tools[self._active_oneshot]
-            t.on_cancel()
+            t.on_cancel(self._ctx)
             t.on_deactivate()
             self._active_oneshot = None
             if self._return_to_modal:
@@ -171,7 +180,7 @@ class ToolManager:
             self._notify()
             return
         if self._active_modal and self._active_modal in self._tools:
-            self._tools[self._active_modal].on_cancel()
+            self._tools[self._active_modal].on_cancel(self._ctx)
 
     def _notify(self) -> None:
         for cb in list(self._listeners):

@@ -2,10 +2,9 @@ from casys.dsl._core.core_transpiler import TranspilerModule
 from casys.dsl._core.transpiler_modules.util_modules import PipelineSection
 
 from casys.dsl._core.transpiler_modules.step_func_modules import (
+    handle_macros_step_func,
     mark_swaps,
     create_parallel_groups, 
-    # analyze_index_requirements,
-    # analyze_kcall_buffer_usage,
 )
 
 class BaseStepFuncProcessor(PipelineSection):
@@ -14,8 +13,7 @@ class BaseStepFuncProcessor(PipelineSection):
     @property
     def pipeline(self) -> list[TranspilerModule | None]:
         return [
+            handle_macros_step_func.HandleMacrosStepFunc(),
             mark_swaps.MarkSwaps(),
-            # analyze_index_requirements.AnalyzeIndexRequirements(),
-            # analyze_kcall_buffer_usage.AnalyzeKCallLayerUsage(),
             create_parallel_groups.CreateParallelGroups(),
         ]

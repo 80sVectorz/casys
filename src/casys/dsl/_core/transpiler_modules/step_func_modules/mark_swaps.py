@@ -27,20 +27,17 @@ class MarkSwaps(TranspilerModule):
         ir_ast = ir.step_func.ir_ast
 
         ptrn_swap_calls = [
-            OneOrMore(pattern=Collect(match_in_expr(
-                    pattern=match_func_call(kernel_utils.step_func_swap),
-                ), 'swap_calls')
-            )
+            OneOrMore(pattern=Collect(match_func_call(kernel_utils.step_func_swap)
+            , 'swap_calls'))
         ]
 
         swapped_layers_merged: set[str] = set()
 
         def handle_swap_calls(m: dict[str, Any]) -> list[ast.AST]:
-            swap_calls: list[ast.Expr] = m['swap_calls']
+            swap_calls: list[casys_ast.Cs_Macro] = m['swap_calls']
             
             target_layers: set[str] = set()
-            for expr in swap_calls:
-                swap_call: ast.Call = expr.value # type: ignore
+            for swap_call in swap_calls:
                 args: dict[str, Any] = core_macros.MacroSpec.parse_and_validate(kernel_utils.step_func_swap,swap_call)
                 if 'layers' in args:
                     arg_layers: list[Any] = cast(ast.List, args['layers']).elts

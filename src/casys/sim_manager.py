@@ -107,7 +107,7 @@ class SimManager:
 
     
     def _mark_dirty(self):
-        # mark entire grid dirty for each field
+        """mark entire grid dirty for each field"""
         dirty_map: dict[str, list[tuple[int,...]]] = {}
         full_rect = (*[0 for _ in self.dims], *self.dims)
         for field in self._fields:
@@ -120,9 +120,7 @@ class SimManager:
 
 
     def rewind(self) -> None:
-        """
-        Rewind 1 step
-        """
+        """Rewind 1 step"""
         if self._running.is_set() or self.history_buffer.maxlen == 0: return
 
         if len(self.history_buffer) < 1: return
@@ -152,7 +150,7 @@ class SimManager:
         """
         wanted = fields if fields is not None else self._fields
 
-        # 1) CUDA: copy only the needed SoA fields
+        # CUDA: copy only the needed SoA fields
         try:
             self.sim.ensure_host_synced_for(wanted)
         except AttributeError:
@@ -162,7 +160,7 @@ class SimManager:
             except AttributeError:
                 pass
 
-        # 2) Build a mapping with only the required SoA buffers
+        # Build a mapping with only the required SoA buffers
         state: dict[str, Any] = {}
         needed_soa: set[str] = set()
         for f in wanted:
@@ -216,15 +214,17 @@ class SimManager:
                 frame_dt = time.perf_counter() - loop_start
                 self._record_timing(frame_dt=frame_dt, step_ms=step_ms)
             else:
+                if len(self.sim._edit_queue):
+                    self.sim._apply_pending_edits()
+                    dirty_map = {field: [(*[0 for _ in self.dims], *self.dims)] for field in self._fields}
+                    self._publish_update(dirty_map)
                 time.sleep(0.01)
 
     def _publish_update(
         self,
         dirty_map: dict[str, list[tuple[int,...]]]
     ) -> None:
-        """
-        Push update into queue and notify subscribers.
-        """
+        """Push update into queue and notify subscribers."""
         if self._use_update_queue:
             try:
                 self._update_queue.put_nowait(dirty_map)
@@ -263,7 +263,7 @@ class SimManager:
                 'history_len': np.array(len(hist_list), dtype=np.int32),
                 'history_maxlen': np.array(self.history_buffer.maxlen or 0, dtype=np.int32),
             }
-            # Compose final dict of arrays for savez
+            # Compose final dict of arrays for save
             payload: dict[str, np.ndarray] = {
                 't': np.array(t, dtype=np.int64),
                 **{f'buffers/{k}': v for k, v in buffers.items()},
@@ -317,7 +317,6 @@ class SimManager:
                         hbufs[name] = np.array(npz[k])
                 history_items.append((ht, hbufs))
 
-        # Apply under lock
         with self._state_lock:
             self.sim.load_state(t, buffers)
             self.history_buffer = deque(history_items, maxlen=history_maxlen)
@@ -327,7 +326,7 @@ class SimManager:
         if was_running:
             self.start()
 
-    # Performance and timing tracking related logic
+    # -- Performance and timing tracking related logic --
 
     def _record_timing(self, frame_dt: float | None, step_ms: float) -> None:
         """Update timing metrics.

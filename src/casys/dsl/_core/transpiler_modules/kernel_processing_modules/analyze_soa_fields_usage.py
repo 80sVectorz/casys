@@ -1,14 +1,9 @@
-from os import write
-from typing import DefaultDict, Sequence, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING: 
     from casys.dsl._core.soa_field_usage_info_helper import SoaFieldUsageInfo
-    from casys.spec.ca_layer_spec import CaLayerSpec
-
-from collections import defaultdict
 
 from casys.dsl._core.core_transpiler import TranspilerModule
-from casys.dsl._core.errors import TranspileError
 from casys.dsl._core.ir import Ir_CaSys
 from casys.dsl._core.debug.ast_timeline_tracking import get_tracker, f_tag_kernel, f_tag_transpiler_module
 

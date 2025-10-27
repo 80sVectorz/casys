@@ -7,8 +7,6 @@ from dataclasses import _MISSING_TYPE, Field, dataclass, fields, is_dataclass
 from typing import Protocol, get_args, Any
 from casys.spec.virtual_types import VirtualType, is_virtual_type_annotation, unwrap_virtual_type
 
-from casys.spec.ca_layer_spec import CaLayerRef
-
 import numpy as np
 
 @dataclass(frozen=True)
@@ -68,7 +66,7 @@ class CactField:
     schema: FieldSchema
 
     @classmethod
-    def from_dclass_field(cls: Type[CactField], field: Field, cact: CaCellTypeSpec, default: Any | None = None) -> CactField:
+    def from_dclass_field(cls: type[CactField], field: Field, cact: CaCellTypeSpec, default: Any | None = None) -> CactField:
         fld_type = CactFieldType.from_dclass_field(field)
 
         if default is not None:
@@ -132,9 +130,6 @@ class CaCellTypeSpec[T]:
 
     def __repr__(self) -> str:
         return f'<CaCellType: {self.dclass.__qualname__}>'
-
-    def get_layer_ref(self, name: str) -> CaLayerRef:
-        return CaLayerRef(name, self)
     
 type t_int_like = int | np.int_ | np.int8 | np.int16 | np.uint | np.uint8 | np.uint16
     

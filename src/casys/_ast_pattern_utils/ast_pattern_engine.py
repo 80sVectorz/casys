@@ -3,8 +3,6 @@ import ast
 from dataclasses import dataclass
 from typing import Any, Callable, Sequence
 
-from numpy.tests.test__all__ import test_no_duplicates_in_np__all__
-
 class Message:
     ...
 
@@ -763,7 +761,7 @@ class BottomUpPatternTransformer(ast.NodeTransformer):
         rec(value)
         return out
 
-    def visit(self, node: ast.AST) -> ast.AST | None:
+    def visit(self, node: ast.AST) -> ast.AST | list[ast.AST] | None:
         # First, transform children recursively (bottom-up)
         for field, value in list(ast.iter_fields(node)):
             if isinstance(value, list):
@@ -793,8 +791,8 @@ class BottomUpPatternTransformer(ast.NodeTransformer):
                 if key in bindings:
                     if action is not None:
                         replacements = action(bindings)
-                        if replacements:
-                            return replacements[0] if len(replacements) == 1 else replacements
+                        if len(replacements) == 0: return None
+                        return replacements[0] if len(replacements) == 1 else replacements
                     else:
                         return None  # delete the matched node
 
