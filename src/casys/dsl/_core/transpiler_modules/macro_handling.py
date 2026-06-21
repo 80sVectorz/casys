@@ -22,6 +22,7 @@ from casys._ast_pattern_utils.ast_pattern_engine import (
 from casys._ast_pattern_utils.ast_pattern_templates import match_in_expr
 
 from casys.dsl._core import core_macros
+from casys.dsl._core import macro_handlers # Needs to be last to ensure macro handlers are registered
 
 
 def handle_macros_recursive(
